@@ -672,6 +672,9 @@ fn expand_serialize_enum(
     let has_deserialize_renames = variant_renames
         .iter()
         .any(|variant| variant.deserialize_name.is_some());
+    let has_aliases = variant_renames
+        .iter()
+        .any(|variant| !variant.aliases.is_empty());
     let as_str_name_expr = if has_serialize_renames {
         let arms = variant_renames.iter().map(|variant| {
             let ident = &variant.ident;
@@ -692,16 +695,29 @@ fn expand_serialize_enum(
             self.as_str_name()
         }
     };
-    let from_str_name_expr = if has_deserialize_renames {
-        let checks = variant_renames.iter().filter_map(|variant| {
+    let from_str_name_expr = if has_deserialize_renames || has_aliases {
+        let checks = variant_renames.iter().map(|variant| {
             let ident = &variant.ident;
-            let rename = variant.deserialize_name.as_ref()?;
-            let lit = LitStr::new(rename, ident.span());
-            Some(quote! {
-                if value == #lit {
-                    return ::core::option::Option::Some(Self::#ident);
+            let rename_check = variant.deserialize_name.as_ref().map(|rename| {
+                let lit = LitStr::new(rename, ident.span());
+                quote! {
+                    if value == #lit {
+                        return ::core::option::Option::Some(Self::#ident);
+                    }
                 }
-            })
+            });
+            let alias_checks = variant.aliases.iter().map(|alias| {
+                let lit = LitStr::new(alias, ident.span());
+                quote! {
+                    if value == #lit {
+                        return ::core::option::Option::Some(Self::#ident);
+                    }
+                }
+            });
+            quote! {
+                #rename_check
+                #(#alias_checks)*
+            }
         });
         quote! {
             #(#checks)*
@@ -923,6 +939,11 @@ fn expand_oneof_impl(
         let serialize_name_literal = LitStr::new(&serialize_name, ident.span());
         let deserialize_name_literal = LitStr::new(&deserialize_name, ident.span());
         let proto_name_literal = LitStr::new(&proto_name, ident.span());
+        let alias_literals: Vec<_> = variant_attrs
+            .aliases
+            .iter()
+            .map(|alias| LitStr::new(alias, ident.span()))
+            .collect();
         let value_ident = Ident::new("value", ident.span());
 
         let serialize_expr = serialize_value_expr(&kind, &value_ident, enum_path.as_ref());
@@ -945,9 +966,9 @@ fn expand_oneof_impl(
         });
 
         let match_pat = if deserialize_name == proto_name {
-            quote! { #deserialize_name_literal }
+            quote! { #deserialize_name_literal #( | #alias_literals )* }
         } else {
-            quote! { #deserialize_name_literal | #proto_name_literal }
+            quote! { #deserialize_name_literal | #proto_name_literal #( | #alias_literals )* }
         };
 
         deserialize_arms.push(quote! {
@@ -1635,6 +1656,7 @@ fn parse_enum_variant_renames(data: &syn::DataEnum) -> syn::Result<Vec<EnumVaria
             ident: variant.ident.clone(),
             serialize_name: attrs.serialize_name,
             deserialize_name: attrs.deserialize_name,
+            aliases: attrs.aliases,
         });
     }
 
@@ -2238,6 +2260,7 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
         canonical: CanonicalAttrs::default(),
         serialize_name: None,
         deserialize_name: None,
+        aliases: Vec::new(),
     };
 
     for attr in attrs {
@@ -2261,9 +2284,12 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
                             let value: LitStr = nested.value()?.parse()?;
                             variant.deserialize_name = Some(value.value());
                         }
-                        Ok(())
+                            Ok(())
                         })?;
                     }
+            } else if meta.path.is_ident("alias") {
+                let value: LitStr = meta.value()?.parse()?;
+                variant.aliases.push(value.value());
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 variant.canonical.proto_name = Some(value.value());
@@ -2450,6 +2476,7 @@ struct VariantAttrs {
     canonical: CanonicalAttrs,
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
+    aliases: Vec<String>,
 }
 
 struct ContainerAttrs {
@@ -2537,5 +2564,6 @@ struct EnumVariantRename {
     ident: Ident,
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
+    aliases: Vec<String>,
 }
 
