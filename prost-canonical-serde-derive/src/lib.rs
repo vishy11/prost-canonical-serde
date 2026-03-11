@@ -22,11 +22,11 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{
     parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, Ident, LitStr, Path,
-    Type, TypePath,
+    Token, Type, TypePath,
 };
 
 /// Derives `CanonicalSerialize` and `serde::Serialize` for prost messages.
-#[proc_macro_derive(CanonicalSerialize, attributes(prost, prost_canonical_serde))]
+#[proc_macro_derive(CanonicalSerialize, attributes(prost, prost_canonical_serde, serde))]
 pub fn derive_canonical_serialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_serialize(&input) {
@@ -36,7 +36,7 @@ pub fn derive_canonical_serialize(input: TokenStream) -> TokenStream {
 }
 
 /// Derives `CanonicalDeserialize` and `serde::Deserialize` for prost messages.
-#[proc_macro_derive(CanonicalDeserialize, attributes(prost, prost_canonical_serde))]
+#[proc_macro_derive(CanonicalDeserialize, attributes(prost, prost_canonical_serde, serde))]
 pub fn derive_canonical_deserialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_deserialize(&input) {
@@ -59,7 +59,7 @@ fn expand_serialize(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream
 fn expand_deserialize(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     match &input.data {
         Data::Struct(data) => expand_deserialize_struct(input, data),
-        Data::Enum(data) => Ok(expand_deserialize_enum(input, data)),
+        Data::Enum(data) => expand_deserialize_enum(input, data),
         Data::Union(_) => Err(syn::Error::new(
             input.span(),
             "CanonicalDeserialize does not support unions",
@@ -72,26 +72,30 @@ fn expand_serialize_struct(
     data: &syn::DataStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
-    let container_attrs = parse_canonical_attrs(&input.attrs)?;
+    let container_attrs = parse_container_attrs(input)?;
     let fields = extract_fields(&data.fields)?;
+    let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
+    let has_flatten = fields.iter().any(|field| field.is_flatten);
 
     if container_attrs.transparent {
-        return expand_serialize_transparent_struct(name, &fields);
+        return expand_serialize_transparent_struct(name, &serialize_name, &fields);
     }
 
     let mut field_serializers = Vec::new();
     let mut field_match_arms = Vec::new();
+    let mut field_count_stmts = Vec::new();
 
     for field in &fields {
         field_serializers.push(serialize_field(field));
         field_match_arms.push(field_match_arm(field)?);
+        field_count_stmts.push(serialized_field_count_stmt(field));
     }
 
     Ok(quote! {
         impl ::prost_canonical_serde::ProstMessage for #name {
             fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
             where
-                S: ::serde::ser::SerializeMap,
+                S: ::prost_canonical_serde::SerializeObject,
             {
                 #(#field_serializers)*
                 Ok(())
@@ -110,10 +114,22 @@ fn expand_serialize_struct(
             where
                 S: ::serde::Serializer,
             {
-                use ::serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(None)?;
-                <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
-                map.end()
+                if #has_flatten {
+                    use ::serde::ser::SerializeMap;
+                    let mut map =
+                        ::prost_canonical_serde::MapObjectSerializer::new(serializer.serialize_map(None)?);
+                    <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
+                    map.end()
+                } else {
+                    use ::serde::ser::SerializeStruct;
+                    let mut __pcs_len = 0usize;
+                    #(#field_count_stmts)*
+                    let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
+                        serializer.serialize_struct(#serialize_name, __pcs_len)?,
+                    );
+                    <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
+                    map.end()
+                }
             }
         }
 
@@ -136,15 +152,17 @@ fn expand_deserialize_struct(
     data: &syn::DataStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
-    let container_attrs = parse_canonical_attrs(&input.attrs)?;
+    let container_attrs = parse_container_attrs(input)?;
     let map_ident = Ident::new("__pcs_map", Span::call_site());
     let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
     let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
     let oneof_value_ident = Ident::new("__pcs_oneof_value", Span::call_site());
     let fields = extract_fields(&data.fields)?;
+    let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
+    let has_flatten = fields.iter().any(|field| field.is_flatten);
 
     if container_attrs.transparent {
-        return expand_deserialize_transparent_struct(name, &fields);
+        return expand_deserialize_transparent_struct(name, &deserialize_name, &fields);
     }
 
     let mut field_inits = Vec::new();
@@ -235,7 +253,11 @@ fn expand_deserialize_struct(
                     }
                 }
 
-                deserializer.deserialize_map(Visitor)
+                if #has_flatten {
+                    deserializer.deserialize_map(Visitor)
+                } else {
+                    deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
+                }
             }
         }
 
@@ -254,6 +276,7 @@ fn expand_deserialize_struct(
 
 fn expand_serialize_transparent_struct(
     name: &Ident,
+    serialize_name: &LitStr,
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let field = fields
@@ -272,7 +295,7 @@ fn expand_serialize_transparent_struct(
         ));
     }
 
-    let serialize_expr = serialize_transparent_field(field);
+    let serialize_expr = serialize_transparent_field(field, serialize_name);
 
     Ok(quote! {
         impl ::prost_canonical_serde::CanonicalSerialize for #name {
@@ -300,6 +323,7 @@ fn expand_serialize_transparent_struct(
 
 fn expand_deserialize_transparent_struct(
     name: &Ident,
+    deserialize_name: &LitStr,
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let field = fields
@@ -327,8 +351,25 @@ fn expand_deserialize_transparent_struct(
             where
                 D: ::serde::Deserializer<'de>,
             {
-                let #ident = #deserialize_expr;
-                Ok(#name { #ident })
+                struct Visitor;
+
+                impl<'de> ::serde::de::Visitor<'de> for Visitor {
+                    type Value = #name;
+
+                    fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                        formatter.write_str("newtype struct")
+                    }
+
+                    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+                    where
+                        D: ::serde::Deserializer<'de>,
+                    {
+                        let #ident = #deserialize_expr;
+                        Ok(#name { #ident })
+                    }
+                }
+
+                deserializer.deserialize_newtype_struct(#deserialize_name, Visitor)
             }
         }
 
@@ -351,6 +392,8 @@ fn expand_serialize_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     if is_oneof_enum(data) {
+        let container_attrs = parse_container_attrs(input)?;
+        let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
         let oneof_impl = expand_oneof_impl(input, data)?;
         return Ok(quote! {
             #oneof_impl
@@ -359,8 +402,10 @@ fn expand_serialize_enum(
                 where
                     S: ::serde::Serializer,
                 {
-                    use ::serde::ser::SerializeMap;
-                    let mut map = serializer.serialize_map(None)?;
+                    use ::serde::ser::SerializeStruct;
+                    let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
+                        serializer.serialize_struct(#serialize_name, 1)?,
+                    );
                     <Self as ::prost_canonical_serde::ProstOneof>::serialize_field(self, &mut map)?;
                     map.end()
                 }
@@ -422,15 +467,20 @@ fn expand_serialize_enum(
     })
 }
 
-fn expand_deserialize_enum(input: &DeriveInput, data: &syn::DataEnum) -> proc_macro2::TokenStream {
+fn expand_deserialize_enum(
+    input: &DeriveInput,
+    data: &syn::DataEnum,
+) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     if is_oneof_enum(data) {
+        let container_attrs = parse_container_attrs(input)?;
+        let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
         let map_ident = Ident::new("__pcs_map", Span::call_site());
         let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
         let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
         let value_ident = Ident::new("__pcs_value", Span::call_site());
         let found_ident = Ident::new("__pcs_found", Span::call_site());
-        return quote! {
+        return Ok(quote! {
             impl ::prost_canonical_serde::CanonicalDeserialize for #name {
                 fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
                 where
@@ -478,7 +528,7 @@ fn expand_deserialize_enum(input: &DeriveInput, data: &syn::DataEnum) -> proc_ma
                         }
                     }
 
-                    deserializer.deserialize_map(Visitor)
+                    deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
             }
         }
 
@@ -492,10 +542,10 @@ fn expand_deserialize_enum(input: &DeriveInput, data: &syn::DataEnum) -> proc_ma
                 )
             }
         }
-        };
+        });
     }
 
-    quote! {
+    Ok(quote! {
         impl ::prost_canonical_serde::CanonicalDeserialize for #name {
             fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
             where
@@ -520,7 +570,7 @@ fn expand_deserialize_enum(input: &DeriveInput, data: &syn::DataEnum) -> proc_ma
                 )
             }
         }
-    }
+    })
 }
 
 fn expand_oneof_impl(
@@ -589,7 +639,7 @@ fn expand_oneof_impl(
         impl ::prost_canonical_serde::ProstOneof for #name {
             fn serialize_field<S>(&self, map: &mut S) -> Result<(), S::Error>
             where
-                S: ::serde::ser::SerializeMap,
+                S: ::prost_canonical_serde::SerializeObject,
             {
                 match self {
                     #(#serialize_arms),*
@@ -715,7 +765,10 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     }
 }
 
-fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
+fn serialize_transparent_field(
+    field: &FieldInfo,
+    serialize_name: &LitStr,
+) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
     match &field.kind {
@@ -728,9 +781,9 @@ fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             quote! {
                 if let Some(value) = &self.#ident {
                     let value = #value_expr;
-                    ::serde::Serialize::serialize(&value, serializer)
+                    serializer.serialize_newtype_struct(#serialize_name, &value)
                 } else {
-                    serializer.serialize_unit()
+                    serializer.serialize_newtype_struct(#serialize_name, &())
                 }
             }
         }
@@ -738,12 +791,12 @@ fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             if let Kind::Enum(path) = inner.as_ref() {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalEnumSeq::<#path>::new(&self.#ident);
-                    ::serde::Serialize::serialize(&value, serializer)
+                    serializer.serialize_newtype_struct(#serialize_name, &value)
                 }
             } else {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalSeq::new(&self.#ident);
-                    ::serde::Serialize::serialize(&value, serializer)
+                    serializer.serialize_newtype_struct(#serialize_name, &value)
                 }
             }
         }
@@ -751,12 +804,12 @@ fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             if let Kind::Enum(path) = value_kind.as_ref() {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalEnumMapRef::<#path, _>::new(&self.#ident);
-                    ::serde::Serialize::serialize(&value, serializer)
+                    serializer.serialize_newtype_struct(#serialize_name, &value)
                 }
             } else {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalMapRef::new(&self.#ident);
-                    ::serde::Serialize::serialize(&value, serializer)
+                    serializer.serialize_newtype_struct(#serialize_name, &value)
                 }
             }
         }
@@ -769,7 +822,7 @@ fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             quote! {
                 let value = &self.#ident;
                 let value = #value_expr;
-                ::serde::Serialize::serialize(&value, serializer)
+                serializer.serialize_newtype_struct(#serialize_name, &value)
             }
         }
     }
@@ -1052,6 +1105,35 @@ fn deserialize_transparent_field(field: &FieldInfo) -> syn::Result<proc_macro2::
             )?
             .0
         }),
+    }
+}
+
+fn serialized_field_count_stmt(field: &FieldInfo) -> proc_macro2::TokenStream {
+    let ident = &field.ident;
+
+    if field.is_oneof || matches!(field.kind, Kind::Option(_)) {
+        return quote! {
+            if self.#ident.is_some() {
+                __pcs_len += 1;
+            }
+        };
+    }
+
+    match &field.kind {
+        Kind::Vec(_) | Kind::Map(_, _, _) => quote! {
+            if !self.#ident.is_empty() {
+                __pcs_len += 1;
+            }
+        },
+        _ => {
+            let field_expr = quote! { self.#ident };
+            let default_check = default_check_expr(&field.kind, &field_expr);
+            quote! {
+                if #default_check {
+                    __pcs_len += 1;
+                }
+            }
+        }
     }
 }
 
@@ -1639,12 +1721,59 @@ fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
     Ok(parsed)
 }
 
+fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
+    let attrs = parse_canonical_attrs(&input.attrs)?;
+    let default_name = input.ident.to_string();
+    let mut container = ContainerAttrs {
+        transparent: attrs.transparent,
+        serialize_name: default_name.clone(),
+        deserialize_name: default_name,
+    };
+
+    for attr in &input.attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let name = value.value();
+                    container.serialize_name = name.clone();
+                    container.deserialize_name = name;
+                } else {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("serialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            container.serialize_name = value.value();
+                        } else if nested.path.is_ident("deserialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            container.deserialize_name = value.value();
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(container)
+}
+
 #[derive(Default)]
 struct CanonicalAttrs {
     proto_name: Option<String>,
     json_name: Option<String>,
     transparent: bool,
     flatten: bool,
+}
+
+struct ContainerAttrs {
+    transparent: bool,
+    serialize_name: String,
+    deserialize_name: String,
 }
 
 fn is_message_like(kind: &Kind) -> bool {

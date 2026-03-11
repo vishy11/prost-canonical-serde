@@ -99,7 +99,7 @@ pub trait ProstEnum: Sized {
 pub trait ProstOneof: Sized {
     fn serialize_field<S>(&self, map: &mut S) -> Result<(), S::Error>
     where
-        S: serde::ser::SerializeMap;
+        S: SerializeObject;
 
     fn try_deserialize<'de, A>(key: &str, map: &mut A) -> Result<OneofMatch<Self>, A::Error>
     where
@@ -113,7 +113,7 @@ pub trait ProstOneof: Sized {
 pub trait ProstMessage: Sized {
     fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
     where
-        S: serde::ser::SerializeMap;
+        S: SerializeObject;
 
     fn matches_field_name(key: &str) -> bool;
 }
@@ -125,6 +125,84 @@ pub enum OneofMatch<T> {
     NoMatch,
     /// The key matched a oneof field; `None` means "skip value".
     Matched(Option<T>),
+}
+
+/// Internal helper that abstracts object-like serializers.
+#[doc(hidden)]
+pub trait SerializeObject {
+    type Error;
+
+    fn serialize_entry<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    where
+        T: serde::Serialize + ?Sized;
+}
+
+/// Internal adapter for serializers that encode anonymous maps.
+#[doc(hidden)]
+pub struct MapObjectSerializer<S>(S);
+
+impl<S> MapObjectSerializer<S> {
+    #[must_use]
+    pub fn new(serializer: S) -> Self {
+        Self(serializer)
+    }
+}
+
+impl<S> MapObjectSerializer<S>
+where
+    S: serde::ser::SerializeMap,
+{
+    pub fn end(self) -> Result<S::Ok, S::Error> {
+        self.0.end()
+    }
+}
+
+impl<S> SerializeObject for MapObjectSerializer<S>
+where
+    S: serde::ser::SerializeMap,
+{
+    type Error = S::Error;
+
+    fn serialize_entry<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        self.0.serialize_entry(key, value)
+    }
+}
+
+/// Internal adapter for serializers that encode named structs.
+#[doc(hidden)]
+pub struct StructObjectSerializer<S>(S);
+
+impl<S> StructObjectSerializer<S> {
+    #[must_use]
+    pub fn new(serializer: S) -> Self {
+        Self(serializer)
+    }
+}
+
+impl<S> StructObjectSerializer<S>
+where
+    S: serde::ser::SerializeStruct,
+{
+    pub fn end(self) -> Result<S::Ok, S::Error> {
+        self.0.end()
+    }
+}
+
+impl<S> SerializeObject for StructObjectSerializer<S>
+where
+    S: serde::ser::SerializeStruct,
+{
+    type Error = S::Error;
+
+    fn serialize_entry<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        self.0.serialize_field(key, value)
+    }
 }
 
 #[cfg(all(test, feature = "std"))]

@@ -1,0 +1,465 @@
+extern crate alloc;
+
+use std::cell::RefCell;
+use std::fmt;
+
+use prost_canonical_serde::{CanonicalDeserialize, CanonicalSerialize};
+use serde::de::{self, Deserialize, Deserializer, IntoDeserializer, MapAccess, Visitor, value};
+use serde::forward_to_deserialize_any;
+use serde::ser::Error as _;
+use serde::ser::{self, Impossible, SerializeStruct, Serializer};
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(rename = "wire_message")]
+struct RenamedMessage {
+    #[prost(string, tag = "1")]
+    #[prost_canonical_serde(proto_name = "value", json_name = "value")]
+    value: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(rename(serialize = "wire_box_ser", deserialize = "wire_box_de"))]
+#[prost_canonical_serde(transparent)]
+struct RenamedTransparent {
+    #[prost(string, tag = "1")]
+    #[prost_canonical_serde(proto_name = "value", json_name = "value")]
+    value: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(rename(serialize = "wire_choice_ser", deserialize = "wire_choice_de"))]
+enum RenamedChoice {
+    #[prost(string, tag = "1")]
+    #[prost_canonical_serde(proto_name = "value_choice", json_name = "valueChoice")]
+    ValueChoice(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CaptureError(String);
+
+impl fmt::Display for CaptureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CaptureError {}
+
+impl ser::Error for CaptureError {
+    fn custom<T>(msg: T) -> Self
+    where
+        T: fmt::Display,
+    {
+        Self(msg.to_string())
+    }
+}
+
+struct NameCaptureSerializer;
+
+struct NameCaptureStruct {
+    name: String,
+}
+
+impl SerializeStruct for NameCaptureStruct {
+    type Ok = String;
+    type Error = CaptureError;
+
+    fn serialize_field<T>(&mut self, _key: &'static str, _value: &T) -> Result<(), Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        Ok(self.name)
+    }
+}
+
+impl Serializer for NameCaptureSerializer {
+    type Ok = String;
+    type Error = CaptureError;
+    type SerializeSeq = Impossible<String, CaptureError>;
+    type SerializeTuple = Impossible<String, CaptureError>;
+    type SerializeTupleStruct = Impossible<String, CaptureError>;
+    type SerializeTupleVariant = Impossible<String, CaptureError>;
+    type SerializeMap = Impossible<String, CaptureError>;
+    type SerializeStruct = NameCaptureStruct;
+    type SerializeStructVariant = Impossible<String, CaptureError>;
+
+    fn serialize_struct(
+        self,
+        name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        Ok(NameCaptureStruct {
+            name: name.to_string(),
+        })
+    }
+
+    fn serialize_newtype_struct<T>(
+        self,
+        name: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        Ok(name.to_string())
+    }
+
+    fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_i32(self, _v: i32) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_i64(self, _v: i64) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_u8(self, _v: u8) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_u16(self, _v: u16) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_u32(self, _v: u32) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_u64(self, _v: u64) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_char(self, _v: char) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Self::Ok, Self::Error> {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        Err(CaptureError::custom("unexpected scalar serialization"))
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        Err(CaptureError::custom("unexpected sequence serialization"))
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        Err(CaptureError::custom("unexpected sequence serialization"))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        Err(CaptureError::custom("unexpected sequence serialization"))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        Err(CaptureError::custom("unexpected sequence serialization"))
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        Err(CaptureError::custom("unexpected map serialization"))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        Err(CaptureError::custom("unexpected variant serialization"))
+    }
+}
+
+struct SingleFieldMap {
+    key: Option<&'static str>,
+    value: &'static str,
+}
+
+struct StringValueDeserializer(&'static str);
+
+impl<'de> Deserializer<'de> for StringValueDeserializer {
+    type Error = value::Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_borrowed_str(self.0)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_borrowed_str(self.0)
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_string(self.0.to_string())
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char bytes byte_buf unit unit_struct
+        newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl SingleFieldMap {
+    fn new(key: &'static str, value: &'static str) -> Self {
+        Self {
+            key: Some(key),
+            value,
+        }
+    }
+}
+
+impl<'de> MapAccess<'de> for SingleFieldMap {
+    type Error = value::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.key.take() {
+            Some(key) => seed.deserialize(key.into_deserializer()).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(StringValueDeserializer(self.value))
+    }
+}
+
+struct StructNameDeserializer<'a> {
+    seen: &'a RefCell<Option<String>>,
+    key: &'static str,
+    value: &'static str,
+}
+
+impl<'a> StructNameDeserializer<'a> {
+    fn new(seen: &'a RefCell<Option<String>>, key: &'static str, value: &'static str) -> Self {
+        Self { seen, key, value }
+    }
+}
+
+impl<'de> Deserializer<'de> for StructNameDeserializer<'_> {
+    type Error = value::Error;
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        *self.seen.borrow_mut() = Some(name.to_string());
+        visitor.visit_map(SingleFieldMap::new(self.key, self.value))
+    }
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(de::Error::custom("expected deserialize_struct"))
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf option
+        unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier ignored_any
+    }
+}
+
+struct NewtypeNameDeserializer<'a> {
+    seen: &'a RefCell<Option<String>>,
+    value: &'static str,
+}
+
+impl<'a> NewtypeNameDeserializer<'a> {
+    fn new(seen: &'a RefCell<Option<String>>, value: &'static str) -> Self {
+        Self { seen, value }
+    }
+}
+
+impl<'de> Deserializer<'de> for NewtypeNameDeserializer<'_> {
+    type Error = value::Error;
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        *self.seen.borrow_mut() = Some(name.to_string());
+        visitor.visit_newtype_struct(StringValueDeserializer(self.value))
+    }
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(de::Error::custom("expected deserialize_newtype_struct"))
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf option
+        unit unit_struct struct seq tuple tuple_struct map enum identifier ignored_any
+    }
+}
+
+#[test]
+fn container_rename_applies_to_struct_serialize_and_deserialize_names() {
+    let serialize_name = serde::Serialize::serialize(
+        &RenamedMessage {
+            value: "demo".to_string(),
+        },
+        NameCaptureSerializer,
+    )
+    .expect("serialize renamed message");
+    assert_eq!(serialize_name, "wire_message");
+
+    let seen = RefCell::new(None);
+    let roundtrip =
+        RenamedMessage::deserialize(StructNameDeserializer::new(&seen, "value", "demo"))
+            .expect("deserialize renamed message");
+    assert_eq!(seen.into_inner(), Some("wire_message".to_string()));
+    assert_eq!(
+        roundtrip,
+        RenamedMessage {
+            value: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn container_rename_supports_independent_newtype_names() {
+    let serialize_name = serde::Serialize::serialize(
+        &RenamedTransparent {
+            value: "demo".to_string(),
+        },
+        NameCaptureSerializer,
+    )
+    .expect("serialize renamed transparent");
+    assert_eq!(serialize_name, "wire_box_ser");
+
+    let seen = RefCell::new(None);
+    let roundtrip = RenamedTransparent::deserialize(NewtypeNameDeserializer::new(&seen, "demo"))
+        .expect("deserialize renamed transparent");
+    assert_eq!(seen.into_inner(), Some("wire_box_de".to_string()));
+    assert_eq!(
+        roundtrip,
+        RenamedTransparent {
+            value: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn container_rename_applies_to_oneof_enums() {
+    let serialize_name = serde::Serialize::serialize(
+        &RenamedChoice::ValueChoice("demo".to_string()),
+        NameCaptureSerializer,
+    )
+    .expect("serialize renamed oneof");
+    assert_eq!(serialize_name, "wire_choice_ser");
+
+    let seen = RefCell::new(None);
+    let roundtrip =
+        RenamedChoice::deserialize(StructNameDeserializer::new(&seen, "valueChoice", "demo"))
+            .expect("deserialize renamed oneof");
+    assert_eq!(seen.into_inner(), Some("wire_choice_de".to_string()));
+    assert_eq!(roundtrip, RenamedChoice::ValueChoice("demo".to_string()));
+}
