@@ -15,9 +15,8 @@ spec, while keeping the normal `serde_json` API surface.
 
 - Seamless Prost integration: derive macros and build helpers work with
   prost-generated message types.
-- Serde-style attributes: supports `#[prost_canonical_serde(transparent)]` and
-  `#[prost_canonical_serde(flatten)]`; see the crate docs for behavior and
-  current limits.
+- Serde-style attributes: supports `#[prost_canonical_serde(transparent)]` and `#[prost_canonical_serde(flatten)]`;
+  see the crate docs for behavior and current limits.
 - Well-known types support: `prost-types` (Timestamp, Duration, Any, Struct,
   etc.) are handled with their canonical JSON mappings.
 - `no_std` friendly: the core crate works without `std` (alloc required).
