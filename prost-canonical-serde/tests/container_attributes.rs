@@ -1,4 +1,5 @@
 extern crate alloc;
+extern crate serde as renamed_serde;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -15,6 +16,13 @@ use serde_json::json;
 struct RenamedMessage {
     #[prost(string, tag = "1")]
     #[prost_canonical_serde(proto_name = "value", json_name = "value")]
+    value: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(crate = "renamed_serde")]
+struct CustomSerdePathMessage {
+    #[prost(string, tag = "1")]
     value: String,
 }
 
@@ -179,6 +187,13 @@ enum RenamedChoice {
     #[prost(string, tag = "1")]
     #[prost_canonical_serde(proto_name = "value_choice", json_name = "valueChoice")]
     ValueChoice(String),
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(crate = "renamed_serde")]
+enum CustomSerdePathChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
@@ -579,6 +594,20 @@ fn container_rename_applies_to_struct_serialize_and_deserialize_names() {
 }
 
 #[test]
+fn container_serde_crate_path_is_accepted_for_structs() {
+    let value = CustomSerdePathMessage {
+        value: "demo".to_string(),
+    };
+    let json = serde_json::to_value(&value).expect("serialize with custom serde path");
+    assert_eq!(json, json!({ "value": "demo" }));
+
+    let roundtrip: CustomSerdePathMessage =
+        serde_json::from_value(json!({ "value": "demo" }))
+            .expect("deserialize with custom serde path");
+    assert_eq!(roundtrip, value);
+}
+
+#[test]
 fn container_rename_supports_independent_newtype_names() {
     let serialize_name = serde::Serialize::serialize(
         &RenamedTransparent {
@@ -616,6 +645,18 @@ fn container_rename_applies_to_oneof_enums() {
             .expect("deserialize renamed oneof");
     assert_eq!(seen.into_inner(), Some("wire_choice_de".to_string()));
     assert_eq!(roundtrip, RenamedChoice::ValueChoice("demo".to_string()));
+}
+
+#[test]
+fn container_serde_crate_path_is_accepted_for_oneofs() {
+    let value = CustomSerdePathChoice::Value("demo".to_string());
+    let json = serde_json::to_value(&value).expect("serialize oneof with custom serde path");
+    assert_eq!(json, json!({ "value": "demo" }));
+
+    let roundtrip: CustomSerdePathChoice =
+        serde_json::from_value(json!({ "value": "demo" }))
+            .expect("deserialize oneof with custom serde path");
+    assert_eq!(roundtrip, value);
 }
 
 #[test]
