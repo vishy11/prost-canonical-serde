@@ -190,6 +190,9 @@ fn expand_deserialize_struct(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
+    if let Some(tokens) = expand_deserialize_conversion(name, &container_attrs.deserialize_via) {
+        return Ok(tokens);
+    }
     let map_ident = Ident::new("__pcs_map", Span::call_site());
     let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
     let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
@@ -498,6 +501,50 @@ fn expand_deserialize_transparent_struct(
     })
 }
 
+fn expand_deserialize_conversion(
+    name: &Ident,
+    deserialize_via: &DeserializeVia,
+) -> Option<proc_macro2::TokenStream> {
+    let body = match deserialize_via {
+        DeserializeVia::None => return None,
+        DeserializeVia::From(from_ty) => {
+            quote! {
+                let __pcs_value = <#from_ty as ::serde::Deserialize<'de>>::deserialize(deserializer)?;
+                Ok(<Self as ::core::convert::From<#from_ty>>::from(__pcs_value))
+            }
+        }
+        DeserializeVia::TryFrom(from_ty) => {
+            quote! {
+                let __pcs_value = <#from_ty as ::serde::Deserialize<'de>>::deserialize(deserializer)?;
+                <Self as ::core::convert::TryFrom<#from_ty>>::try_from(__pcs_value)
+                    .map_err(::serde::de::Error::custom)
+            }
+        }
+    };
+
+    Some(quote! {
+        impl ::prost_canonical_serde::CanonicalDeserialize for #name {
+            fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                #body
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for #name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
+                    deserializer,
+                )
+            }
+        }
+    })
+}
+
 fn expand_serialize_enum(
     input: &DeriveInput,
     data: &syn::DataEnum,
@@ -597,6 +644,9 @@ fn expand_deserialize_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
+    if let Some(tokens) = expand_deserialize_conversion(name, &container_attrs.deserialize_via) {
+        return Ok(tokens);
+    }
     if !matches!(&container_attrs.default, ContainerDefault::None) {
         return Err(syn::Error::new(
             input.span(),
@@ -2050,6 +2100,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         deserialize_name: default_name,
         serialize_rename_all: None,
         deserialize_rename_all: None,
+        deserialize_via: DeserializeVia::None,
         deny_unknown_fields: false,
         tag: None,
         default: ContainerDefault::None,
@@ -2110,6 +2161,22 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                 } else {
                     container.default = ContainerDefault::Default;
                 }
+            } else if meta.path.is_ident("from") {
+                let value: LitStr = meta.value()?.parse()?;
+                let from_ty = syn::parse_str::<Type>(&value.value())?;
+                set_deserialize_via(
+                    &mut container.deserialize_via,
+                    DeserializeVia::From(from_ty),
+                    meta.path.span(),
+                )?;
+            } else if meta.path.is_ident("try_from") {
+                let value: LitStr = meta.value()?.parse()?;
+                let from_ty = syn::parse_str::<Type>(&value.value())?;
+                set_deserialize_via(
+                    &mut container.deserialize_via,
+                    DeserializeVia::TryFrom(from_ty),
+                    meta.path.span(),
+                )?;
             } else {
                 return Err(unsupported_serde_container_attr(&meta.path));
             }
@@ -2132,6 +2199,21 @@ fn unsupported_serde_container_attr(path: &syn::Path) -> syn::Error {
     )
 }
 
+fn set_deserialize_via(
+    slot: &mut DeserializeVia,
+    value: DeserializeVia,
+    span: Span,
+) -> syn::Result<()> {
+    if !matches!(slot, DeserializeVia::None) {
+        return Err(syn::Error::new(
+            span,
+            "only one of serde from and try_from may be specified",
+        ));
+    }
+    *slot = value;
+    Ok(())
+}
+
 #[derive(Default)]
 struct CanonicalAttrs {
     proto_name: Option<String>,
@@ -2146,6 +2228,7 @@ struct ContainerAttrs {
     deserialize_name: String,
     serialize_rename_all: Option<RenameRule>,
     deserialize_rename_all: Option<RenameRule>,
+    deserialize_via: DeserializeVia,
     deny_unknown_fields: bool,
     tag: Option<String>,
     default: ContainerDefault,
@@ -2155,6 +2238,12 @@ enum ContainerDefault {
     None,
     Default,
     Path(Path),
+}
+
+enum DeserializeVia {
+    None,
+    From(Type),
+    TryFrom(Type),
 }
 
 fn is_message_like(kind: &Kind) -> bool {

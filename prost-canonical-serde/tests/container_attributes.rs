@@ -60,6 +60,59 @@ fn custom_default_message() -> PathDefaultMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct FromWireMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(from = "FromWireMessage")]
+struct FromConvertedMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+}
+
+impl From<FromWireMessage> for FromConvertedMessage {
+    fn from(value: FromWireMessage) -> Self {
+        Self {
+            count: value.count + 1,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+enum TryFromWireChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(try_from = "TryFromWireChoice")]
+enum TryFromConvertedChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
+}
+
+struct TryFromChoiceError(&'static str);
+
+impl fmt::Display for TryFromChoiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl TryFrom<TryFromWireChoice> for TryFromConvertedChoice {
+    type Error = TryFromChoiceError;
+
+    fn try_from(value: TryFromWireChoice) -> Result<Self, Self::Error> {
+        match value {
+            TryFromWireChoice::Value(text) if text.is_empty() => Err(TryFromChoiceError("empty values are not allowed")),
+            TryFromWireChoice::Value(text) => Ok(Self::Value(text.to_ascii_uppercase())),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(
     rename(serialize = "wire_tag_ser", deserialize = "wire_tag_de"),
     tag = "type"
@@ -602,6 +655,32 @@ fn container_default_path_fills_missing_fields() {
             note: "path".to_string(),
         }
     );
+}
+
+#[test]
+fn container_from_deserializes_through_intermediate_type() {
+    let value: FromConvertedMessage =
+        serde_json::from_value(json!({ "count": "7" })).expect("deserialize via from");
+
+    assert_eq!(value, FromConvertedMessage { count: 8 });
+}
+
+#[test]
+fn container_try_from_deserializes_through_intermediate_type() {
+    let value: TryFromConvertedChoice =
+        serde_json::from_value(json!({ "value": "demo" })).expect("deserialize via try_from");
+
+    assert_eq!(value, TryFromConvertedChoice::Value("DEMO".to_string()));
+}
+
+#[test]
+fn container_try_from_propagates_conversion_errors() {
+    let err = serde_json::from_value::<TryFromConvertedChoice>(json!({
+        "value": ""
+    }))
+    .expect_err("failed conversion should be reported");
+
+    assert!(err.to_string().contains("empty values are not allowed"));
 }
 
 #[test]
