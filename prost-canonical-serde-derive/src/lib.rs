@@ -202,6 +202,7 @@ fn expand_deserialize_struct(
         .tag
         .as_ref()
         .map(|tag| LitStr::new(tag, name.span()));
+    let default_ident = Ident::new("__pcs_default", Span::call_site());
 
     if container_attrs.transparent {
         if container_attrs.tag.is_some() {
@@ -233,7 +234,11 @@ fn expand_deserialize_struct(
     for field in &fields {
         let ident = field.ident.clone();
         field_names.push(ident.clone());
-        field_inits.push(init_field(field));
+        field_inits.push(init_field(
+            field,
+            Some(&container_attrs.default),
+            &default_ident,
+        ));
 
         if field.is_flatten {
             field_inits.push(init_flatten_buffer(field)?);
@@ -300,6 +305,15 @@ fn expand_deserialize_struct(
     } else {
         quote! {}
     };
+    let container_default_init = match &container_attrs.default {
+        ContainerDefault::None => quote! {},
+        ContainerDefault::Default => quote! {
+            let #default_ident: #name = ::core::default::Default::default();
+        },
+        ContainerDefault::Path(path) => quote! {
+            let #default_ident: #name = #path();
+        },
+    };
 
     Ok(quote! {
         #(#flatten_deny_guards)*
@@ -323,6 +337,7 @@ fn expand_deserialize_struct(
                         A: ::serde::de::MapAccess<'de>,
                     {
                         #tag_init
+                        #container_default_init
                         #(#field_inits)*
 
                         while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
@@ -489,6 +504,12 @@ fn expand_serialize_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
+    if !matches!(&container_attrs.default, ContainerDefault::None) {
+        return Err(syn::Error::new(
+            input.span(),
+            "default is only supported on structs in prost-canonical-serde",
+        ));
+    }
     if container_attrs.tag.is_some() {
         return Err(syn::Error::new(
             input.span(),
@@ -576,6 +597,12 @@ fn expand_deserialize_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
+    if !matches!(&container_attrs.default, ContainerDefault::None) {
+        return Err(syn::Error::new(
+            input.span(),
+            "default is only supported on structs in prost-canonical-serde",
+        ));
+    }
     if container_attrs.tag.is_some() {
         return Err(syn::Error::new(
             input.span(),
@@ -954,8 +981,18 @@ fn serialize_transparent_field(
     }
 }
 
-fn init_field(field: &FieldInfo) -> proc_macro2::TokenStream {
+fn init_field(
+    field: &FieldInfo,
+    container_default: Option<&ContainerDefault>,
+    default_ident: &Ident,
+) -> proc_macro2::TokenStream {
     let ident = &field.ident;
+
+    if !matches!(container_default, None | Some(ContainerDefault::None)) {
+        return quote! {
+            let mut #ident = #default_ident.#ident;
+        };
+    }
 
     if field.is_oneof {
         return quote! {
@@ -1030,12 +1067,14 @@ fn finish_flatten_field(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStre
         })
     } else {
         Ok(quote! {
-            #ident =
-                <::prost_canonical_serde::CanonicalValue<#target_ty> as ::serde::Deserialize>::deserialize(
-                    ::prost_canonical_serde::BufferedValue::Map(#flatten_ident),
-                )
-                .map_err(::serde::de::Error::custom)?
-                .0;
+            if !#flatten_ident.is_empty() {
+                #ident =
+                    <::prost_canonical_serde::CanonicalValue<#target_ty> as ::serde::Deserialize>::deserialize(
+                        ::prost_canonical_serde::BufferedValue::Map(#flatten_ident),
+                    )
+                    .map_err(::serde::de::Error::custom)?
+                    .0;
+            }
         })
     }
 }
@@ -2013,6 +2052,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         deserialize_rename_all: None,
         deny_unknown_fields: false,
         tag: None,
+        default: ContainerDefault::None,
     };
 
     for attr in &input.attrs {
@@ -2057,37 +2097,39 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                         Ok(())
                     })?;
                 }
-            } else if meta.path.is_ident("rename_all_fields") {
-                return Err(syn::Error::new(
-                    meta.path.span(),
-                    "rename_all_fields is only supported for enums with struct variants, which prost-canonical-serde does not support",
-                ));
             } else if meta.path.is_ident("deny_unknown_fields") {
                 container.deny_unknown_fields = true;
             } else if meta.path.is_ident("tag") {
                 let value: LitStr = meta.value()?.parse()?;
                 container.tag = Some(value.value());
-            } else if meta.path.is_ident("content") {
-                return Err(syn::Error::new(
-                    meta.path.span(),
-                    "adjacently tagged enums are not supported in prost-canonical-serde",
-                ));
-            } else if meta.path.is_ident("untagged") {
-                return Err(syn::Error::new(
-                    meta.path.span(),
-                    "untagged enums are not supported in prost-canonical-serde",
-                ));
-            } else if meta.path.is_ident("bound") {
-                return Err(syn::Error::new(
-                    meta.path.span(),
-                    "serde(bound = ...) is not supported because prost-canonical-serde does not generate generic impls",
-                ));
+            } else if meta.path.is_ident("default") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let path = syn::parse_str::<Path>(&value.value())?;
+                    container.default = ContainerDefault::Path(path);
+                } else {
+                    container.default = ContainerDefault::Default;
+                }
+            } else {
+                return Err(unsupported_serde_container_attr(&meta.path));
             }
             Ok(())
         })?;
     }
 
     Ok(container)
+}
+
+fn unsupported_serde_container_attr(path: &syn::Path) -> syn::Error {
+    let attr = path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_else(|| "attribute".to_string());
+    syn::Error::new(
+        path.span(),
+        format!("unsupported serde container attribute `{attr}`"),
+    )
 }
 
 #[derive(Default)]
@@ -2106,6 +2148,13 @@ struct ContainerAttrs {
     deserialize_rename_all: Option<RenameRule>,
     deny_unknown_fields: bool,
     tag: Option<String>,
+    default: ContainerDefault,
+}
+
+enum ContainerDefault {
+    None,
+    Default,
+    Path(Path),
 }
 
 fn is_message_like(kind: &Kind) -> bool {

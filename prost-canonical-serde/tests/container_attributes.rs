@@ -26,6 +26,40 @@ struct StrictMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(default)]
+struct ContainerDefaultMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+impl Default for ContainerDefaultMessage {
+    fn default() -> Self {
+        Self {
+            count: 42,
+            note: "fallback".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(default = "custom_default_message")]
+struct PathDefaultMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+fn custom_default_message() -> PathDefaultMessage {
+    PathDefaultMessage {
+        count: 7,
+        note: "path".to_string(),
+    }
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(
     rename(serialize = "wire_tag_ser", deserialize = "wire_tag_de"),
     tag = "type"
@@ -522,6 +556,50 @@ fn unknown_fields_are_ignored_without_deny_unknown_fields() {
         value,
         RenamedMessage {
             value: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn container_default_fills_missing_fields_from_default_impl() {
+    let value: ContainerDefaultMessage =
+        serde_json::from_value(json!({})).expect("missing fields should use container default");
+
+    assert_eq!(
+        value,
+        ContainerDefaultMessage {
+            count: 42,
+            note: "fallback".to_string(),
+        }
+    );
+}
+
+#[test]
+fn container_default_preserves_present_fields() {
+    let value: ContainerDefaultMessage = serde_json::from_value(json!({
+        "count": "9"
+    }))
+    .expect("present fields should override container default");
+
+    assert_eq!(
+        value,
+        ContainerDefaultMessage {
+            count: 9,
+            note: "fallback".to_string(),
+        }
+    );
+}
+
+#[test]
+fn container_default_path_fills_missing_fields() {
+    let value: PathDefaultMessage =
+        serde_json::from_value(json!({})).expect("missing fields should use default path");
+
+    assert_eq!(
+        value,
+        PathDefaultMessage {
+            count: 7,
+            note: "path".to_string(),
         }
     );
 }
