@@ -34,6 +34,13 @@ struct StrictMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(expecting = "a message object")]
+struct ExpectingMessage {
+    #[prost(string, tag = "1")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(default)]
 struct ContainerDefaultMessage {
     #[prost(int64, tag = "1")]
@@ -199,6 +206,13 @@ enum CustomSerdePathChoice {
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(deny_unknown_fields)]
 enum StrictChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(expecting = "a choice object")]
+enum ExpectingChoice {
     #[prost(string, tag = "1")]
     Value(String),
 }
@@ -671,6 +685,14 @@ fn deny_unknown_fields_rejects_unknown_struct_keys() {
 }
 
 #[test]
+fn container_expecting_customizes_struct_errors() {
+    let err = serde_json::from_value::<ExpectingMessage>(json!("demo"))
+        .expect_err("invalid type should use custom expecting text");
+
+    assert!(err.to_string().contains("expected a message object"));
+}
+
+#[test]
 fn deny_unknown_fields_rejects_unknown_oneof_keys() {
     let err = serde_json::from_value::<StrictChoice>(json!({
         "extra": "nope"
@@ -678,6 +700,14 @@ fn deny_unknown_fields_rejects_unknown_oneof_keys() {
     .expect_err("unknown oneof fields should be rejected");
 
     assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn container_expecting_customizes_oneof_errors() {
+    let err = serde_json::from_value::<ExpectingChoice>(json!("demo"))
+        .expect_err("invalid type should use custom expecting text");
+
+    assert!(err.to_string().contains("expected a choice object"));
 }
 
 #[test]

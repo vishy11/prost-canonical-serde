@@ -249,6 +249,10 @@ fn expand_deserialize_struct(
     let oneof_value_ident = Ident::new("__pcs_oneof_value", Span::call_site());
     let fields = extract_fields(&data.fields, &container_attrs)?;
     let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
+    let expecting = LitStr::new(
+        container_attrs.expecting.as_deref().unwrap_or("map"),
+        name.span(),
+    );
     let has_flatten = fields.iter().any(|field| field.is_flatten);
     let deny_unknown_fields = container_attrs.deny_unknown_fields;
     let tag_key = container_attrs
@@ -264,7 +268,12 @@ fn expand_deserialize_struct(
                 "tag is only supported on structs with named fields",
             ));
         }
-        return expand_deserialize_transparent_struct(name, &deserialize_name, &fields)
+        return expand_deserialize_transparent_struct(
+            name,
+            &deserialize_name,
+            &expecting,
+            &fields,
+        )
             .map(|tokens| wrap_with_serde_path(tokens, &container_attrs.serde_path));
     }
 
@@ -383,7 +392,7 @@ fn expand_deserialize_struct(
                     type Value = #name;
 
                     fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                        formatter.write_str("map")
+                        formatter.write_str(#expecting)
                     }
 
                     fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
@@ -490,6 +499,7 @@ fn expand_serialize_transparent_struct(
 fn expand_deserialize_transparent_struct(
     name: &Ident,
     deserialize_name: &LitStr,
+    expecting: &LitStr,
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let field = fields
@@ -523,7 +533,7 @@ fn expand_deserialize_transparent_struct(
                     type Value = #name;
 
                     fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                        formatter.write_str("newtype struct")
+                        formatter.write_str(#expecting)
                     }
 
                     fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
@@ -720,6 +730,10 @@ fn expand_deserialize_enum(
     }
     if is_oneof_enum(data) {
         let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
+        let expecting = LitStr::new(
+            container_attrs.expecting.as_deref().unwrap_or("map"),
+            name.span(),
+        );
         let deny_unknown_fields = container_attrs.deny_unknown_fields;
         let map_ident = Ident::new("__pcs_map", Span::call_site());
         let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
@@ -738,7 +752,7 @@ fn expand_deserialize_enum(
                         type Value = #name;
 
                         fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                            formatter.write_str("map")
+                            formatter.write_str(#expecting)
                         }
 
                         fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
@@ -2159,6 +2173,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         deserialize_name: default_name,
         serialize_rename_all: None,
         deserialize_rename_all: None,
+        expecting: None,
         serde_path: syn::parse_str("::serde")?,
         serialize_via: SerializeVia::None,
         deserialize_via: DeserializeVia::None,
@@ -2217,6 +2232,9 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
             } else if meta.path.is_ident("crate") {
                 let value: LitStr = meta.value()?.parse()?;
                 container.serde_path = syn::parse_str::<Path>(&value.value())?;
+            } else if meta.path.is_ident("expecting") {
+                let value: LitStr = meta.value()?.parse()?;
+                container.expecting = Some(value.value());
             } else if meta.path.is_ident("into") {
                 let value: LitStr = meta.value()?.parse()?;
                 let into_ty = syn::parse_str::<Type>(&value.value())?;
@@ -2315,6 +2333,7 @@ struct ContainerAttrs {
     deserialize_name: String,
     serialize_rename_all: Option<RenameRule>,
     deserialize_rename_all: Option<RenameRule>,
+    expecting: Option<String>,
     serde_path: Path,
     serialize_via: SerializeVia,
     deserialize_via: DeserializeVia,
