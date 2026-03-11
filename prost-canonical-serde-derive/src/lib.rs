@@ -665,6 +665,53 @@ fn expand_serialize_enum(
             "tag is not supported on enums in prost-canonical-serde",
         ));
     }
+    let variant_renames = parse_enum_variant_renames(data)?;
+    let has_serialize_renames = variant_renames
+        .iter()
+        .any(|variant| variant.serialize_name.is_some());
+    let has_deserialize_renames = variant_renames
+        .iter()
+        .any(|variant| variant.deserialize_name.is_some());
+    let as_str_name_expr = if has_serialize_renames {
+        let arms = variant_renames.iter().map(|variant| {
+            let ident = &variant.ident;
+            if let Some(name) = &variant.serialize_name {
+                let lit = LitStr::new(name, ident.span());
+                quote! { Self::#ident => #lit, }
+            } else {
+                quote! { Self::#ident => #name::#ident.as_str_name(), }
+            }
+        });
+        quote! {
+            match self {
+                #(#arms)*
+            }
+        }
+    } else {
+        quote! {
+            self.as_str_name()
+        }
+    };
+    let from_str_name_expr = if has_deserialize_renames {
+        let checks = variant_renames.iter().filter_map(|variant| {
+            let ident = &variant.ident;
+            let rename = variant.deserialize_name.as_ref()?;
+            let lit = LitStr::new(rename, ident.span());
+            Some(quote! {
+                if value == #lit {
+                    return ::core::option::Option::Some(Self::#ident);
+                }
+            })
+        });
+        quote! {
+            #(#checks)*
+            #name::from_str_name(value)
+        }
+    } else {
+        quote! {
+            #name::from_str_name(value)
+        }
+    };
     Ok(wrap_with_serde_path(quote! {
         impl ::prost_canonical_serde::ProstEnum for #name {
             fn from_i32(value: i32) -> ::core::option::Option<Self> {
@@ -672,11 +719,11 @@ fn expand_serialize_enum(
             }
 
             fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-                #name::from_str_name(value)
+                #from_str_name_expr
             }
 
             fn as_str_name(&self) -> &'static str {
-                self.as_str_name()
+                #as_str_name_expr
             }
 
             fn as_i32(&self) -> i32 {
@@ -689,7 +736,7 @@ fn expand_serialize_enum(
             where
                 S: __pcs_serde::Serializer,
             {
-                serializer.serialize_str(self.as_str_name())
+                serializer.serialize_str(<Self as ::prost_canonical_serde::ProstEnum>::as_str_name(self))
             }
         }
 
@@ -848,7 +895,8 @@ fn expand_oneof_impl(
 
     for variant in &data.variants {
         let ident = &variant.ident;
-        let attrs = parse_canonical_attrs(&variant.attrs)?;
+        let variant_attrs = parse_variant_attrs(&variant.attrs)?;
+        let attrs = &variant_attrs.canonical;
         if attrs.transparent || attrs.flatten {
             return Err(syn::Error::new(
                 ident.span(),
@@ -863,12 +911,14 @@ fn expand_oneof_impl(
             &attrs,
             container_attrs.serialize_rename_all,
             &proto_name,
+            variant_attrs.serialize_name.as_ref(),
         );
         let deserialize_name = name_for_variant(
             ident,
             &attrs,
             container_attrs.deserialize_rename_all,
             &proto_name,
+            variant_attrs.deserialize_name.as_ref(),
         );
         let serialize_name_literal = LitStr::new(&serialize_name, ident.span());
         let deserialize_name_literal = LitStr::new(&deserialize_name, ident.span());
@@ -1576,6 +1626,21 @@ fn parse_variant(variant: &syn::Variant) -> syn::Result<(Type, Kind, Option<Path
     Ok((fields.ty.clone(), kind, enum_path))
 }
 
+fn parse_enum_variant_renames(data: &syn::DataEnum) -> syn::Result<Vec<EnumVariantRename>> {
+    let mut variants = Vec::new();
+
+    for variant in &data.variants {
+        let attrs = parse_variant_attrs(&variant.attrs)?;
+        variants.push(EnumVariantRename {
+            ident: variant.ident.clone(),
+            serialize_name: attrs.serialize_name,
+            deserialize_name: attrs.deserialize_name,
+        });
+    }
+
+    Ok(variants)
+}
+
 fn parse_prost_attrs(attrs: &[Attribute]) -> syn::Result<(bool, Option<Path>)> {
     let mut is_oneof = false;
     let mut enum_path = None;
@@ -1877,7 +1942,11 @@ fn name_for_variant(
     attrs: &CanonicalAttrs,
     rename_rule: Option<RenameRule>,
     proto_name: &str,
+    explicit_name: Option<&String>,
 ) -> String {
+    if let Some(name) = explicit_name {
+        return name.clone();
+    }
     if let Some(json_name) = &attrs.json_name {
         return json_name.clone();
     }
@@ -2164,6 +2233,55 @@ fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
     Ok(parsed)
 }
 
+fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
+    let mut variant = VariantAttrs {
+        canonical: CanonicalAttrs::default(),
+        serialize_name: None,
+        deserialize_name: None,
+    };
+
+    for attr in attrs {
+        if !attr.path().is_ident("prost_canonical_serde") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let name = value.value();
+                    variant.serialize_name = Some(name.clone());
+                    variant.deserialize_name = Some(name);
+                } else {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("serialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            variant.serialize_name = Some(value.value());
+                        } else if nested.path.is_ident("deserialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            variant.deserialize_name = Some(value.value());
+                        }
+                        Ok(())
+                        })?;
+                    }
+            } else if meta.path.is_ident("proto_name") {
+                let value: LitStr = meta.value()?.parse()?;
+                variant.canonical.proto_name = Some(value.value());
+            } else if meta.path.is_ident("json_name") {
+                let value: LitStr = meta.value()?.parse()?;
+                variant.canonical.json_name = Some(value.value());
+            } else if meta.path.is_ident("transparent") {
+                variant.canonical.transparent = true;
+            } else if meta.path.is_ident("flatten") {
+                variant.canonical.flatten = true;
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(variant)
+}
+
 fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
     let default_name = input.ident.to_string();
     let mut container = ContainerAttrs {
@@ -2328,6 +2446,12 @@ struct CanonicalAttrs {
     flatten: bool,
 }
 
+struct VariantAttrs {
+    canonical: CanonicalAttrs,
+    serialize_name: Option<String>,
+    deserialize_name: Option<String>,
+}
+
 struct ContainerAttrs {
     transparent: bool,
     serialize_name: String,
@@ -2407,5 +2531,11 @@ enum KeyKind {
 enum MapKind {
     Hash,
     BTree,
+}
+
+struct EnumVariantRename {
+    ident: Ident,
+    serialize_name: Option<String>,
+    deserialize_name: Option<String>,
 }
 
