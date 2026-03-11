@@ -1235,6 +1235,20 @@ fn init_field(
 ) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
+    match &field.default {
+        FieldDefault::Default => {
+            return quote! {
+                let mut #ident = ::core::default::Default::default();
+            };
+        }
+        FieldDefault::Path(path) => {
+            return quote! {
+                let mut #ident = #path();
+            };
+        }
+        FieldDefault::None => {}
+    }
+
     if !matches!(container_default, None | Some(ContainerDefault::None)) {
         return quote! {
             let mut #ident = #default_ident.#ident;
@@ -2188,6 +2202,7 @@ struct FieldInfo {
     serialize_name: String,
     deserialize_name: String,
     aliases: Vec<String>,
+    default: FieldDefault,
     proto_name: String,
     oneof_type: Option<Type>,
     option_inner: Option<Type>,
@@ -2280,6 +2295,7 @@ impl FieldInfo {
             serialize_name,
             deserialize_name,
             aliases: attrs.aliases,
+            default: attrs.default,
             proto_name,
             oneof_type,
             option_inner,
@@ -2313,6 +2329,7 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         serialize_name: None,
         deserialize_name: None,
         aliases: Vec::new(),
+        default: FieldDefault::None,
     };
 
     for attr in attrs {
@@ -2342,6 +2359,14 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             } else if meta.path.is_ident("alias") {
                 let value: LitStr = meta.value()?.parse()?;
                 field.aliases.push(value.value());
+            } else if meta.path.is_ident("default") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let path = syn::parse_str::<Path>(&value.value())?;
+                    field.default = FieldDefault::Path(path);
+                } else {
+                    field.default = FieldDefault::Default;
+                }
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 field.canonical.proto_name = Some(value.value());
@@ -2600,6 +2625,7 @@ struct FieldAttrs {
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
     aliases: Vec<String>,
+    default: FieldDefault,
 }
 
 struct ContainerAttrs {
@@ -2618,6 +2644,13 @@ struct ContainerAttrs {
 }
 
 enum ContainerDefault {
+    None,
+    Default,
+    Path(Path),
+}
+
+#[derive(Clone)]
+enum FieldDefault {
     None,
     Default,
     Path(Path),

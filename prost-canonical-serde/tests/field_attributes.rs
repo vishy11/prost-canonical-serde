@@ -35,6 +35,38 @@ struct RenamedAliasedFieldMessage {
     name: String,
 }
 
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct FieldPathDefaultMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(default = "default_count")]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[prost_canonical_serde(default = "container_default_message")]
+struct FieldDefaultOverridesContainerMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(default)]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+fn default_count() -> i64 {
+    7
+}
+
+fn container_default_message() -> FieldDefaultOverridesContainerMessage {
+    FieldDefaultOverridesContainerMessage {
+        count: 42,
+        note: "fallback".to_string(),
+    }
+}
+
 #[test]
 fn field_rename_applies_to_serialize_and_deserialize_names() {
     let value = RenamedFieldMessage { count: 42 };
@@ -121,4 +153,64 @@ fn field_alias_works_with_explicit_rename() {
         serde_json::from_value(json!({ "name": "demo" }))
             .expect("deserialize renamed aliased field from proto alias");
     assert_eq!(roundtrip, value);
+}
+
+#[test]
+fn field_default_path_fills_missing_field() {
+    let value: FieldPathDefaultMessage =
+        serde_json::from_value(json!({}))
+            .expect("missing field should use field default path");
+
+    assert_eq!(
+        value,
+        FieldPathDefaultMessage {
+            count: 7,
+            note: String::new(),
+        }
+    );
+}
+
+#[test]
+fn field_default_path_preserves_present_field() {
+    let value: FieldPathDefaultMessage =
+        serde_json::from_value(json!({ "count": "9", "note": "demo" }))
+            .expect("present field should override field default path");
+
+    assert_eq!(
+        value,
+        FieldPathDefaultMessage {
+            count: 9,
+            note: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_default_overrides_container_default_for_missing_field() {
+    let value: FieldDefaultOverridesContainerMessage =
+        serde_json::from_value(json!({}))
+            .expect("field default should override container default");
+
+    assert_eq!(
+        value,
+        FieldDefaultOverridesContainerMessage {
+            count: 0,
+            note: "fallback".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_default_still_preserves_present_field_with_container_default() {
+    let value: FieldDefaultOverridesContainerMessage =
+        serde_json::from_value(json!({ "count": "9" }))
+            .expect("present field should override field default and container default");
+
+    assert_eq!(
+        value,
+        FieldDefaultOverridesContainerMessage {
+            count: 9,
+            note: "fallback".to_string(),
+        }
+    );
 }
