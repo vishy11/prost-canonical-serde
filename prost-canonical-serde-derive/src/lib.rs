@@ -1931,6 +1931,11 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                         Ok(())
                     })?;
                 }
+            } else if meta.path.is_ident("rename_all_fields") {
+                return Err(syn::Error::new(
+                    meta.path.span(),
+                    "rename_all_fields is only supported for enums with struct variants, which prost-canonical-serde does not support",
+                ));
             }
             Ok(())
         })?;
