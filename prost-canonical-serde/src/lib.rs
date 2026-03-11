@@ -29,62 +29,9 @@
 //!
 //! # Additional attributes
 //!
-//! The derive also accepts serde-style helper attributes under
-//! `prost_canonical_serde`.
-//!
-//! ## Transparent
-//! Use `#[prost_canonical_serde(transparent)]` on a single-field named struct
-//! to serialize and deserialize it as the inner field's canonical protobuf JSON
-//! representation.
-//!
-//! ```rust
-//! # extern crate alloc;
-//! use prost_canonical_serde::{CanonicalDeserialize, CanonicalSerialize};
-//!
-//! #[derive(CanonicalSerialize, CanonicalDeserialize)]
-//! #[prost_canonical_serde(transparent)]
-//! struct Count {
-//!     #[prost(int64, tag = "1")]
-//!     #[prost_canonical_serde(proto_name = "count", json_name = "count")]
-//!     count: i64,
-//! }
-//!
-//! assert_eq!(serde_json::to_string(&Count { count: 42 }).unwrap(), r#""42""#);
-//! ```
-//!
-//! ## Flatten
-//! Use `#[prost_canonical_serde(flatten)]` on a message field or
-//! `Option<Message>` field to merge the nested message into the parent JSON
-//! object.
-//!
-//! ```rust
-//! # extern crate alloc;
-//! use prost_canonical_serde::{CanonicalDeserialize, CanonicalSerialize};
-//!
-//! #[derive(CanonicalSerialize, CanonicalDeserialize, PartialEq, Debug)]
-//! struct Metadata {
-//!     #[prost(int64, tag = "1")]
-//!     #[prost_canonical_serde(proto_name = "count", json_name = "count")]
-//!     count: i64,
-//! }
-//!
-//! #[derive(CanonicalSerialize, CanonicalDeserialize, PartialEq, Debug)]
-//! struct Envelope {
-//!     #[prost(string, tag = "1")]
-//!     #[prost_canonical_serde(proto_name = "name", json_name = "name")]
-//!     name: String,
-//!     #[prost(message, optional, tag = "2")]
-//!     #[prost_canonical_serde(flatten)]
-//!     metadata: Option<Metadata>,
-//! }
-//!
-//! let json = serde_json::to_string(&Envelope {
-//!     name: "demo".to_string(),
-//!     metadata: Some(Metadata { count: 42 }),
-//! })
-//! .unwrap();
-//! assert_eq!(json, r#"{"name":"demo","count":"42"}"#);
-//! ```
+//! The derive also supports:
+//! - `#[prost_canonical_serde(transparent)]` on single-field named structs
+//! - `#[prost_canonical_serde(flatten)]` on message fields and `Option<Message>`
 //!
 //! ## Limits
 //!
