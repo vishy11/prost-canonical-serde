@@ -73,7 +73,7 @@ fn expand_serialize_struct(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
-    let fields = extract_fields(&data.fields)?;
+    let fields = extract_fields(&data.fields, &container_attrs)?;
     let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
 
@@ -157,7 +157,7 @@ fn expand_deserialize_struct(
     let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
     let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
     let oneof_value_ident = Ident::new("__pcs_oneof_value", Span::call_site());
-    let fields = extract_fields(&data.fields)?;
+    let fields = extract_fields(&data.fields, &container_attrs)?;
     let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
 
@@ -394,7 +394,7 @@ fn expand_serialize_enum(
     if is_oneof_enum(data) {
         let container_attrs = parse_container_attrs(input)?;
         let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
-        let oneof_impl = expand_oneof_impl(input, data)?;
+        let oneof_impl = expand_oneof_impl(input, data, &container_attrs)?;
         return Ok(quote! {
             #oneof_impl
             impl ::prost_canonical_serde::CanonicalSerialize for #name {
@@ -576,6 +576,7 @@ fn expand_deserialize_enum(
 fn expand_oneof_impl(
     input: &DeriveInput,
     data: &syn::DataEnum,
+    container_attrs: &ContainerAttrs,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let mut serialize_arms = Vec::new();
@@ -592,10 +593,22 @@ fn expand_oneof_impl(
             ));
         }
         let (value_ty, kind, enum_path) = parse_variant(variant)?;
-        let fallback = lower_camel(&ident.to_string());
-        let proto_name = attrs.proto_name.unwrap_or_else(|| fallback.clone());
-        let json_name = attrs.json_name.unwrap_or_else(|| fallback.clone());
-        let json_name_literal = LitStr::new(&json_name, ident.span());
+        let fallback = RenameRule::CamelCase.apply_to_field(&ident.to_string());
+        let proto_name = attrs.proto_name.clone().unwrap_or_else(|| fallback.clone());
+        let serialize_name = name_for_variant(
+            ident,
+            &attrs,
+            container_attrs.serialize_rename_all,
+            &proto_name,
+        );
+        let deserialize_name = name_for_variant(
+            ident,
+            &attrs,
+            container_attrs.deserialize_rename_all,
+            &proto_name,
+        );
+        let serialize_name_literal = LitStr::new(&serialize_name, ident.span());
+        let deserialize_name_literal = LitStr::new(&deserialize_name, ident.span());
         let proto_name_literal = LitStr::new(&proto_name, ident.span());
         let value_ident = Ident::new("value", ident.span());
 
@@ -614,14 +627,14 @@ fn expand_oneof_impl(
         serialize_arms.push(quote! {
             Self::#ident(#value_ident) => {
                 let value = #serialize_expr;
-                map.serialize_entry(#json_name_literal, &value)?;
+                map.serialize_entry(#serialize_name_literal, &value)?;
             }
         });
 
-        let match_pat = if json_name == proto_name {
-            quote! { #json_name_literal }
+        let match_pat = if deserialize_name == proto_name {
+            quote! { #deserialize_name_literal }
         } else {
-            quote! { #json_name_literal | #proto_name_literal }
+            quote! { #deserialize_name_literal | #proto_name_literal }
         };
 
         deserialize_arms.push(quote! {
@@ -669,7 +682,7 @@ fn expand_oneof_impl(
 
 fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     let ident = &field.ident;
-    let json_name = LitStr::new(&field.json_name, ident.span());
+    let serialize_name = LitStr::new(&field.serialize_name, ident.span());
 
     if field.is_flatten {
         let target_ty = field.flatten_target_ty();
@@ -704,7 +717,7 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             quote! {
                 if let Some(value) = &self.#ident {
                     let value = #value_expr;
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             }
         }
@@ -712,12 +725,12 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             let value_stmt = if let Kind::Enum(path) = inner.as_ref() {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalEnumSeq::<#path>::new(&self.#ident);
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             } else {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalSeq::new(&self.#ident);
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             };
 
@@ -731,12 +744,12 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
             let value_stmt = if let Kind::Enum(path) = value_kind.as_ref() {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalEnumMapRef::<#path, _>::new(&self.#ident);
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             } else {
                 quote! {
                     let value = ::prost_canonical_serde::CanonicalMapRef::new(&self.#ident);
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             };
 
@@ -758,7 +771,7 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
                 if #default_check {
                     let value = &self.#ident;
                     let value = #value_expr;
-                    map.serialize_entry(#json_name, &value)?;
+                    map.serialize_entry(#serialize_name, &value)?;
                 }
             }
         }
@@ -920,13 +933,13 @@ fn deserialize_match_arm(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let ident = &field.ident;
     let value_ident = Ident::new("__pcs_value", Span::call_site());
-    let json_name = LitStr::new(&field.json_name, ident.span());
+    let deserialize_name = LitStr::new(&field.deserialize_name, ident.span());
     let proto_name = LitStr::new(&field.proto_name, ident.span());
     let ty = &field.ty;
-    let match_pat = if field.json_name == field.proto_name {
-        quote! { #json_name }
+    let match_pat = if field.deserialize_name == field.proto_name {
+        quote! { #deserialize_name }
     } else {
-        quote! { #json_name | #proto_name }
+        quote! { #deserialize_name | #proto_name }
     };
 
     match &field.kind {
@@ -1156,15 +1169,15 @@ fn field_match_arm(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
     }
 
     let ident = &field.ident;
-    let json_name = LitStr::new(&field.json_name, ident.span());
+    let deserialize_name = LitStr::new(&field.deserialize_name, ident.span());
     let proto_name = LitStr::new(&field.proto_name, ident.span());
-    if field.json_name == field.proto_name {
+    if field.deserialize_name == field.proto_name {
         Ok(quote! {
-            #json_name => true,
+            #deserialize_name => true,
         })
     } else {
         Ok(quote! {
-            #json_name | #proto_name => true,
+            #deserialize_name | #proto_name => true,
         })
     }
 }
@@ -1233,9 +1246,16 @@ fn is_prost_value_type(ty: &Type) -> bool {
         .any(|seg| seg.ident == "prost_types")
 }
 
-fn extract_fields(fields: &Fields) -> syn::Result<Vec<FieldInfo>> {
+fn extract_fields(
+    fields: &Fields,
+    container_attrs: &ContainerAttrs,
+) -> syn::Result<Vec<FieldInfo>> {
     match fields {
-        Fields::Named(named) => named.named.iter().map(FieldInfo::from_field).collect(),
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|field| FieldInfo::from_field(field, container_attrs))
+            .collect(),
         Fields::Unnamed(_) | Fields::Unit => Err(syn::Error::new(
             fields.span(),
             "CanonicalSerialize requires named fields",
@@ -1549,45 +1569,166 @@ fn path_ends_with(ty: &Type, idents: &[&str]) -> bool {
         .all(|(seg, ident)| seg.ident == ident)
 }
 
-fn lower_camel(name: &str) -> String {
-    let mut result = String::new();
-    let mut iter = name.split('_');
-    if let Some(first) = iter.next() {
-        let mut chars = first.chars();
-        if let Some(first_char) = chars.next() {
-            result.push(first_char.to_ascii_lowercase());
-            result.push_str(chars.as_str());
-        }
+fn name_for_field(
+    ident: &Ident,
+    attrs: &CanonicalAttrs,
+    rename_rule: Option<RenameRule>,
+    proto_name: &str,
+) -> String {
+    if let Some(json_name) = &attrs.json_name {
+        return json_name.clone();
     }
-    for part in iter {
-        if part.is_empty() {
+    if attrs.proto_name.is_some() {
+        return RenameRule::CamelCase.apply_to_field(proto_name);
+    }
+    rename_rule
+        .map(|rule| rule.apply_to_field(&ident.to_string()))
+        .unwrap_or_else(|| RenameRule::CamelCase.apply_to_field(proto_name))
+}
+
+fn name_for_variant(
+    ident: &Ident,
+    attrs: &CanonicalAttrs,
+    rename_rule: Option<RenameRule>,
+    proto_name: &str,
+) -> String {
+    if let Some(json_name) = &attrs.json_name {
+        return json_name.clone();
+    }
+    if attrs.proto_name.is_some() {
+        return RenameRule::CamelCase.apply_to_variant(proto_name);
+    }
+    rename_rule
+        .map(|rule| rule.apply_to_variant(&ident.to_string()))
+        .unwrap_or_else(|| RenameRule::CamelCase.apply_to_variant(proto_name))
+}
+
+fn split_words(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut words = Vec::new();
+    let mut current = String::new();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if matches!(ch, '_' | '-') {
+            if !current.is_empty() {
+                words.push(current);
+                current = String::new();
+            }
             continue;
         }
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            result.push(first.to_ascii_uppercase());
-            result.push_str(chars.as_str());
+
+        let boundary = if current.is_empty() {
+            false
+        } else {
+            let prev = chars[index - 1];
+            let next = chars.get(index + 1).copied();
+            (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                || (prev.is_ascii_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_ascii_digit() && ch.is_ascii_alphabetic())
+                || (prev.is_ascii_uppercase()
+                    && ch.is_ascii_uppercase()
+                    && next.is_some_and(|next| next.is_ascii_lowercase()))
+        };
+
+        if boundary {
+            words.push(current);
+            current = String::new();
         }
+
+        current.push(ch.to_ascii_lowercase());
     }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+
+    words
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut result = String::new();
+    result.push(first.to_ascii_uppercase());
+    result.push_str(chars.as_str());
     result
 }
 
-fn to_json_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut capitalize_next = false;
+#[derive(Clone, Copy)]
+enum RenameRule {
+    LowerCase,
+    UpperCase,
+    PascalCase,
+    CamelCase,
+    SnakeCase,
+    ScreamingSnakeCase,
+    KebabCase,
+    ScreamingKebabCase,
+}
 
-    for ch in name.chars() {
-        if ch == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(ch.to_ascii_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
+impl RenameRule {
+    fn parse(value: &LitStr) -> syn::Result<Self> {
+        match value.value().as_str() {
+            "lowercase" => Ok(Self::LowerCase),
+            "UPPERCASE" => Ok(Self::UpperCase),
+            "PascalCase" => Ok(Self::PascalCase),
+            "camelCase" => Ok(Self::CamelCase),
+            "snake_case" => Ok(Self::SnakeCase),
+            "SCREAMING_SNAKE_CASE" => Ok(Self::ScreamingSnakeCase),
+            "kebab-case" => Ok(Self::KebabCase),
+            "SCREAMING-KEBAB-CASE" => Ok(Self::ScreamingKebabCase),
+            _ => Err(syn::Error::new(
+                value.span(),
+                "unsupported rename_all case convention",
+            )),
         }
     }
 
-    result
+    fn apply_to_field(self, name: &str) -> String {
+        self.apply(name)
+    }
+
+    fn apply_to_variant(self, name: &str) -> String {
+        self.apply(name)
+    }
+
+    fn apply(self, name: &str) -> String {
+        let words = split_words(name);
+        match self {
+            Self::LowerCase => words.concat(),
+            Self::UpperCase => words.concat().to_ascii_uppercase(),
+            Self::PascalCase => words
+                .iter()
+                .map(|word| capitalize(word))
+                .collect::<Vec<_>>()
+                .join(""),
+            Self::CamelCase => {
+                let mut iter = words.iter();
+                let Some(first) = iter.next() else {
+                    return String::new();
+                };
+                let mut result = first.clone();
+                for word in iter {
+                    result.push_str(&capitalize(word));
+                }
+                result
+            }
+            Self::SnakeCase => words.join("_"),
+            Self::ScreamingSnakeCase => words
+                .iter()
+                .map(|word| word.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join("_"),
+            Self::KebabCase => words.join("-"),
+            Self::ScreamingKebabCase => words
+                .iter()
+                .map(|word| word.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join("-"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1598,7 +1739,8 @@ struct FieldInfo {
     enum_path: Option<Path>,
     is_oneof: bool,
     is_flatten: bool,
-    json_name: String,
+    serialize_name: String,
+    deserialize_name: String,
     proto_name: String,
     oneof_type: Option<Type>,
     option_inner: Option<Type>,
@@ -1606,7 +1748,7 @@ struct FieldInfo {
 }
 
 impl FieldInfo {
-    fn from_field(field: &syn::Field) -> syn::Result<Self> {
+    fn from_field(field: &syn::Field, container_attrs: &ContainerAttrs) -> syn::Result<Self> {
         let ident = field
             .ident
             .clone()
@@ -1656,8 +1798,22 @@ impl FieldInfo {
             }
         }
 
-        let proto_name = attrs.proto_name.unwrap_or_else(|| ident.to_string());
-        let json_name = attrs.json_name.unwrap_or_else(|| to_json_name(&proto_name));
+        let proto_name = attrs
+            .proto_name
+            .clone()
+            .unwrap_or_else(|| ident.to_string());
+        let serialize_name = name_for_field(
+            &ident,
+            &attrs,
+            container_attrs.serialize_rename_all,
+            &proto_name,
+        );
+        let deserialize_name = name_for_field(
+            &ident,
+            &attrs,
+            container_attrs.deserialize_rename_all,
+            &proto_name,
+        );
 
         Ok(Self {
             ident,
@@ -1666,7 +1822,8 @@ impl FieldInfo {
             enum_path,
             is_oneof,
             is_flatten: attrs.flatten,
-            json_name,
+            serialize_name,
+            deserialize_name,
             proto_name,
             oneof_type,
             option_inner,
@@ -1728,6 +1885,8 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         transparent: attrs.transparent,
         serialize_name: default_name.clone(),
         deserialize_name: default_name,
+        serialize_rename_all: None,
+        deserialize_rename_all: None,
     };
 
     for attr in &input.attrs {
@@ -1754,6 +1913,24 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                         Ok(())
                     })?;
                 }
+            } else if meta.path.is_ident("rename_all") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let rule = RenameRule::parse(&value)?;
+                    container.serialize_rename_all = Some(rule);
+                    container.deserialize_rename_all = Some(rule);
+                } else {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("serialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            container.serialize_rename_all = Some(RenameRule::parse(&value)?);
+                        } else if nested.path.is_ident("deserialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            container.deserialize_rename_all = Some(RenameRule::parse(&value)?);
+                        }
+                        Ok(())
+                    })?;
+                }
             }
             Ok(())
         })?;
@@ -1774,6 +1951,8 @@ struct ContainerAttrs {
     transparent: bool,
     serialize_name: String,
     deserialize_name: String,
+    serialize_rename_all: Option<RenameRule>,
+    deserialize_rename_all: Option<RenameRule>,
 }
 
 fn is_message_like(kind: &Kind) -> bool {

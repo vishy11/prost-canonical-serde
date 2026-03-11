@@ -8,6 +8,7 @@ use serde::de::{self, Deserialize, Deserializer, IntoDeserializer, MapAccess, Vi
 use serde::forward_to_deserialize_any;
 use serde::ser::Error as _;
 use serde::ser::{self, Impossible, SerializeStruct, Serializer};
+use serde_json::json;
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(rename = "wire_message")]
@@ -463,3 +464,144 @@ fn container_rename_applies_to_oneof_enums() {
     assert_eq!(seen.into_inner(), Some("wire_choice_de".to_string()));
     assert_eq!(roundtrip, RenamedChoice::ValueChoice("demo".to_string()));
 }
+
+macro_rules! rename_all_case_tests {
+    ($struct_name:ident, $enum_name:ident, $struct_test:ident, $enum_test:ident, [$($serde_attr:tt)+], $serialize_key:literal, $deserialize_key:literal) => {
+        #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+        #[serde($($serde_attr)+)]
+        struct $struct_name {
+            #[prost(string, tag = "1")]
+            http_status_code: String,
+        }
+
+        #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+        #[serde($($serde_attr)+)]
+        enum $enum_name {
+            #[prost(string, tag = "1")]
+            HttpStatusCode(String),
+        }
+
+        #[test]
+        fn $struct_test() {
+            let value = $struct_name {
+                http_status_code: "demo".to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&value).expect("serialize rename_all struct"),
+                json!({ $serialize_key: "demo" })
+            );
+
+            let roundtrip: $struct_name =
+                serde_json::from_value(json!({ $deserialize_key: "demo" }))
+                    .expect("deserialize rename_all struct");
+            assert_eq!(roundtrip, value);
+        }
+
+        #[test]
+        fn $enum_test() {
+            let value = $enum_name::HttpStatusCode("demo".to_string());
+            assert_eq!(
+                serde_json::to_value(&value).expect("serialize rename_all oneof"),
+                json!({ $serialize_key: "demo" })
+            );
+
+            let roundtrip: $enum_name =
+                serde_json::from_value(json!({ $deserialize_key: "demo" }))
+                    .expect("deserialize rename_all oneof");
+            assert_eq!(roundtrip, value);
+        }
+    };
+}
+
+rename_all_case_tests!(
+    LowercaseFields,
+    LowercaseChoice,
+    rename_all_lowercase_struct_fields,
+    rename_all_lowercase_oneof_variants,
+    [rename_all = "lowercase"],
+    "httpstatuscode",
+    "httpstatuscode"
+);
+
+rename_all_case_tests!(
+    UppercaseFields,
+    UppercaseChoice,
+    rename_all_uppercase_struct_fields,
+    rename_all_uppercase_oneof_variants,
+    [rename_all = "UPPERCASE"],
+    "HTTPSTATUSCODE",
+    "HTTPSTATUSCODE"
+);
+
+rename_all_case_tests!(
+    PascalCaseFields,
+    PascalCaseChoice,
+    rename_all_pascal_case_struct_fields,
+    rename_all_pascal_case_oneof_variants,
+    [rename_all = "PascalCase"],
+    "HttpStatusCode",
+    "HttpStatusCode"
+);
+
+rename_all_case_tests!(
+    CamelCaseFields,
+    CamelCaseChoice,
+    rename_all_camel_case_struct_fields,
+    rename_all_camel_case_oneof_variants,
+    [rename_all = "camelCase"],
+    "httpStatusCode",
+    "httpStatusCode"
+);
+
+rename_all_case_tests!(
+    SnakeCaseFields,
+    SnakeCaseChoice,
+    rename_all_snake_case_struct_fields,
+    rename_all_snake_case_oneof_variants,
+    [rename_all = "snake_case"],
+    "http_status_code",
+    "http_status_code"
+);
+
+rename_all_case_tests!(
+    ScreamingSnakeCaseFields,
+    ScreamingSnakeCaseChoice,
+    rename_all_screaming_snake_case_struct_fields,
+    rename_all_screaming_snake_case_oneof_variants,
+    [rename_all = "SCREAMING_SNAKE_CASE"],
+    "HTTP_STATUS_CODE",
+    "HTTP_STATUS_CODE"
+);
+
+rename_all_case_tests!(
+    KebabCaseFields,
+    KebabCaseChoice,
+    rename_all_kebab_case_struct_fields,
+    rename_all_kebab_case_oneof_variants,
+    [rename_all = "kebab-case"],
+    "http-status-code",
+    "http-status-code"
+);
+
+rename_all_case_tests!(
+    ScreamingKebabCaseFields,
+    ScreamingKebabCaseChoice,
+    rename_all_screaming_kebab_case_struct_fields,
+    rename_all_screaming_kebab_case_oneof_variants,
+    [rename_all = "SCREAMING-KEBAB-CASE"],
+    "HTTP-STATUS-CODE",
+    "HTTP-STATUS-CODE"
+);
+
+rename_all_case_tests!(
+    SplitRenameAllFields,
+    SplitRenameAllChoice,
+    rename_all_split_struct_fields,
+    rename_all_split_oneof_variants,
+    [rename_all(
+        serialize = "camelCase",
+        deserialize = "snake_case"
+    )],
+    "httpStatusCode",
+    "http_status_code"
+);

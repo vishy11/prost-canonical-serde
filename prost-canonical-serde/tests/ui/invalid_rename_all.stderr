@@ -1,0 +1,5 @@
+error: unsupported rename_all case convention
+ --> tests/ui/invalid_rename_all.rs:4:22
+  |
+4 | #[serde(rename_all = "title_case")]
+  |                      ^^^^^^^^^^^^
