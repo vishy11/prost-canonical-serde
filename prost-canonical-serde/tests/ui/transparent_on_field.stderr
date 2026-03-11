@@ -1,5 +1,5 @@
-error: transparent is only supported on containers
- --> tests/ui/transparent_on_field.rs:7:5
+error: unsupported prost_canonical_serde field attribute `transparent`
+ --> tests/ui/transparent_on_field.rs:8:29
   |
-7 |     #[prost(int32, tag = "1")]
-  |     ^
+8 |     #[prost_canonical_serde(transparent)]
+  |                             ^^^^^^^^^^^

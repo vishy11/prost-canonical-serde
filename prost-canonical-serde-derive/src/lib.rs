@@ -954,12 +954,6 @@ fn expand_oneof_impl(
         let ident = &variant.ident;
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
         let attrs = &variant_attrs.canonical;
-        if attrs.transparent || attrs.flatten {
-            return Err(syn::Error::new(
-                ident.span(),
-                "transparent and flatten are not supported on oneof variants",
-            ));
-        }
         let (value_ty, kind, enum_path) = parse_variant(variant)?;
         let fallback = RenameRule::CamelCase.apply_to_field(&ident.to_string());
         let proto_name = attrs.proto_name.clone().unwrap_or_else(|| fallback.clone());
@@ -2218,12 +2212,6 @@ impl FieldInfo {
             .ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
         let (is_oneof, enum_path) = parse_prost_attrs(&field.attrs)?;
         let attrs = parse_field_attrs(&field.attrs)?;
-        if attrs.transparent {
-            return Err(syn::Error::new(
-                field.span(),
-                "transparent is only supported on containers",
-            ));
-        }
         let mut kind = classify_type(&field.ty)?;
         let mut oneof_type = None;
         let option_inner = extract_generic(&field.ty, "Option", 0).cloned();
@@ -2326,7 +2314,6 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut field = FieldAttrs {
         proto_name: None,
         json_name: None,
-        transparent: false,
         flatten: false,
         serialize_name: None,
         deserialize_name: None,
@@ -2375,10 +2362,10 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             } else if meta.path.is_ident("json_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 field.json_name = Some(value.value());
-            } else if meta.path.is_ident("transparent") {
-                field.transparent = true;
             } else if meta.path.is_ident("flatten") {
                 field.flatten = true;
+            } else {
+                return Err(unsupported_prost_canonical_serde_field_attr(&meta.path));
             }
             Ok(())
         })?;
@@ -2437,10 +2424,8 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
             } else if meta.path.is_ident("json_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 variant.canonical.json_name = Some(value.value());
-            } else if meta.path.is_ident("transparent") {
-                variant.canonical.transparent = true;
-            } else if meta.path.is_ident("flatten") {
-                variant.canonical.flatten = true;
+            } else {
+                return Err(unsupported_prost_canonical_serde_variant_attr(&meta.path));
             }
             Ok(())
         })?;
@@ -2575,6 +2560,30 @@ fn unsupported_prost_canonical_serde_container_attr(path: &syn::Path) -> syn::Er
     )
 }
 
+fn unsupported_prost_canonical_serde_field_attr(path: &syn::Path) -> syn::Error {
+    let attr = path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_else(|| "attribute".to_string());
+    syn::Error::new(
+        path.span(),
+        format!("unsupported prost_canonical_serde field attribute `{attr}`"),
+    )
+}
+
+fn unsupported_prost_canonical_serde_variant_attr(path: &syn::Path) -> syn::Error {
+    let attr = path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_else(|| "attribute".to_string());
+    syn::Error::new(
+        path.span(),
+        format!("unsupported prost_canonical_serde variant attribute `{attr}`"),
+    )
+}
+
 fn set_serialize_via(
     slot: &mut SerializeVia,
     value: SerializeVia,
@@ -2609,8 +2618,6 @@ fn set_deserialize_via(
 struct CanonicalAttrs {
     proto_name: Option<String>,
     json_name: Option<String>,
-    transparent: bool,
-    flatten: bool,
 }
 
 struct VariantAttrs {
@@ -2625,7 +2632,6 @@ struct VariantAttrs {
 struct FieldAttrs {
     proto_name: Option<String>,
     json_name: Option<String>,
-    transparent: bool,
     flatten: bool,
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
