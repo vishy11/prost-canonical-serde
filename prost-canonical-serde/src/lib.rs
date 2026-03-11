@@ -92,6 +92,16 @@ pub trait ProstEnum: Sized {
     fn from_str_name(value: &str) -> Option<Self>;
     fn as_str_name(&self) -> &'static str;
     fn as_i32(&self) -> i32;
+
+    fn is_variant_skipped_for_serialization(value: i32) -> bool {
+        let _ = value;
+        false
+    }
+
+    fn is_variant_skipped_for_deserialization(value: i32) -> bool {
+        let _ = value;
+        false
+    }
 }
 
 /// Internal helper trait implemented by prost-generated oneof enums.
@@ -132,7 +142,7 @@ pub enum OneofMatch<T> {
 /// Internal helper that abstracts object-like serializers.
 #[doc(hidden)]
 pub trait SerializeObject {
-    type Error;
+    type Error: serde::ser::Error;
 
     fn serialize_entry<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
     where

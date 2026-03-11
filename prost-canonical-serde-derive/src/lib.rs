@@ -675,6 +675,12 @@ fn expand_serialize_enum(
     let has_aliases = variant_renames
         .iter()
         .any(|variant| !variant.aliases.is_empty());
+    let has_skip_serializing = variant_renames
+        .iter()
+        .any(|variant| variant.skip_serializing);
+    let has_skip_deserializing = variant_renames
+        .iter()
+        .any(|variant| variant.skip_deserializing);
     let as_str_name_expr = if has_serialize_renames {
         let arms = variant_renames.iter().map(|variant| {
             let ident = &variant.ident;
@@ -728,6 +734,28 @@ fn expand_serialize_enum(
             #name::from_str_name(value)
         }
     };
+    let skip_serialize_expr = if has_skip_serializing {
+        let arms = variant_renames.iter().filter(|variant| variant.skip_serializing).map(|variant| {
+            let ident = &variant.ident;
+            quote! { value == Self::#ident as i32 }
+        });
+        quote! {
+            #( #arms )||*
+        }
+    } else {
+        quote! { false }
+    };
+    let skip_deserialize_expr = if has_skip_deserializing {
+        let arms = variant_renames.iter().filter(|variant| variant.skip_deserializing).map(|variant| {
+            let ident = &variant.ident;
+            quote! { value == Self::#ident as i32 }
+        });
+        quote! {
+            #( #arms )||*
+        }
+    } else {
+        quote! { false }
+    };
     Ok(wrap_with_serde_path(quote! {
         impl ::prost_canonical_serde::ProstEnum for #name {
             fn from_i32(value: i32) -> ::core::option::Option<Self> {
@@ -745,6 +773,14 @@ fn expand_serialize_enum(
             fn as_i32(&self) -> i32 {
                 *self as i32
             }
+
+            fn is_variant_skipped_for_serialization(value: i32) -> bool {
+                #skip_serialize_expr
+            }
+
+            fn is_variant_skipped_for_deserialization(value: i32) -> bool {
+                #skip_deserialize_expr
+            }
         }
 
         impl ::prost_canonical_serde::CanonicalSerialize for #name {
@@ -752,7 +788,12 @@ fn expand_serialize_enum(
             where
                 S: __pcs_serde::Serializer,
             {
-                serializer.serialize_str(<Self as ::prost_canonical_serde::ProstEnum>::as_str_name(self))
+                __pcs_serde::Serialize::serialize(
+                    &::prost_canonical_serde::CanonicalEnum::<Self>::new(
+                        <Self as ::prost_canonical_serde::ProstEnum>::as_i32(self),
+                    ),
+                    serializer,
+                )
             }
         }
 
@@ -958,12 +999,22 @@ fn expand_oneof_impl(
             }
         };
 
-        serialize_arms.push(quote! {
-            Self::#ident(#value_ident) => {
-                let value = #serialize_expr;
-                map.serialize_entry(#serialize_name_literal, &value)?;
-            }
-        });
+        if variant_attrs.skip_serializing {
+            serialize_arms.push(quote! {
+                Self::#ident(..) => {
+                    return Err(<S::Error as __pcs_serde::ser::Error>::custom(
+                        "skipped variant cannot be serialized",
+                    ));
+                }
+            });
+        } else {
+            serialize_arms.push(quote! {
+                Self::#ident(#value_ident) => {
+                    let value = #serialize_expr;
+                    map.serialize_entry(#serialize_name_literal, &value)?;
+                }
+            });
+        }
 
         let match_pat = if deserialize_name == proto_name {
             quote! { #deserialize_name_literal #( | #alias_literals )* }
@@ -971,15 +1022,17 @@ fn expand_oneof_impl(
             quote! { #deserialize_name_literal | #proto_name_literal #( | #alias_literals )* }
         };
 
-        deserialize_arms.push(quote! {
-            #match_pat => {
-                let value = #deserialize_expr;
-                Ok(::prost_canonical_serde::OneofMatch::Matched(value.map(Self::#ident)))
-            }
-        });
-        matches_arms.push(quote! {
-            #match_pat => true
-        });
+        if !variant_attrs.skip_deserializing {
+            deserialize_arms.push(quote! {
+                #match_pat => {
+                    let value = #deserialize_expr;
+                    Ok(::prost_canonical_serde::OneofMatch::Matched(value.map(Self::#ident)))
+                }
+            });
+            matches_arms.push(quote! {
+                #match_pat => true
+            });
+        }
     }
 
     Ok(quote! {
@@ -1657,6 +1710,8 @@ fn parse_enum_variant_renames(data: &syn::DataEnum) -> syn::Result<Vec<EnumVaria
             serialize_name: attrs.serialize_name,
             deserialize_name: attrs.deserialize_name,
             aliases: attrs.aliases,
+            skip_serializing: attrs.skip_serializing,
+            skip_deserializing: attrs.skip_deserializing,
         });
     }
 
@@ -2261,6 +2316,8 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
         serialize_name: None,
         deserialize_name: None,
         aliases: Vec::new(),
+        skip_serializing: false,
+        skip_deserializing: false,
     };
 
     for attr in attrs {
@@ -2290,6 +2347,13 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
             } else if meta.path.is_ident("alias") {
                 let value: LitStr = meta.value()?.parse()?;
                 variant.aliases.push(value.value());
+            } else if meta.path.is_ident("skip") {
+                variant.skip_serializing = true;
+                variant.skip_deserializing = true;
+            } else if meta.path.is_ident("skip_serializing") {
+                variant.skip_serializing = true;
+            } else if meta.path.is_ident("skip_deserializing") {
+                variant.skip_deserializing = true;
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 variant.canonical.proto_name = Some(value.value());
@@ -2477,6 +2541,8 @@ struct VariantAttrs {
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
     aliases: Vec<String>,
+    skip_serializing: bool,
+    skip_deserializing: bool,
 }
 
 struct ContainerAttrs {
@@ -2565,5 +2631,7 @@ struct EnumVariantRename {
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
     aliases: Vec<String>,
+    skip_serializing: bool,
+    skip_deserializing: bool,
 }
 

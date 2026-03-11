@@ -49,6 +49,11 @@ impl<E: ProstEnum + 'static> Serialize for CanonicalEnum<'_, E> {
             return serializer.serialize_unit();
         }
         if let Some(enum_value) = E::from_i32(self.value) {
+            if E::is_variant_skipped_for_serialization(self.value) {
+                return Err(<S::Error as serde::ser::Error>::custom(
+                    "skipped enum variant cannot be serialized",
+                ));
+            }
             serializer.serialize_str(enum_value.as_str_name())
         } else {
             serializer.serialize_i32(self.value)
@@ -91,7 +96,13 @@ impl<'de, E: ProstEnum + 'static> Deserialize<'de> for CanonicalEnumValue<E> {
                     return Ok(CanonicalEnumValue(0, PhantomData));
                 }
                 E::from_str_name(value)
-                    .map(|enum_value| CanonicalEnumValue(enum_value.as_i32(), PhantomData))
+                    .and_then(|enum_value| {
+                        if E::is_variant_skipped_for_deserialization(enum_value.as_i32()) {
+                            None
+                        } else {
+                            Some(CanonicalEnumValue(enum_value.as_i32(), PhantomData))
+                        }
+                    })
                     .ok_or_else(|| Err::custom("invalid enum string"))
             }
 
@@ -106,6 +117,9 @@ impl<'de, E: ProstEnum + 'static> Deserialize<'de> for CanonicalEnumValue<E> {
             where
                 Err: de::Error,
             {
+                if E::is_variant_skipped_for_deserialization(value) {
+                    return Err(Err::custom("skipped enum variant cannot be deserialized"));
+                }
                 Ok(CanonicalEnumValue(value, PhantomData))
             }
 
@@ -115,6 +129,9 @@ impl<'de, E: ProstEnum + 'static> Deserialize<'de> for CanonicalEnumValue<E> {
             {
                 let value =
                     i32::try_from(value).map_err(|_| Err::custom("enum number out of range"))?;
+                if E::is_variant_skipped_for_deserialization(value) {
+                    return Err(Err::custom("skipped enum variant cannot be deserialized"));
+                }
                 Ok(CanonicalEnumValue(value, PhantomData))
             }
 
@@ -124,6 +141,9 @@ impl<'de, E: ProstEnum + 'static> Deserialize<'de> for CanonicalEnumValue<E> {
             {
                 let value =
                     i32::try_from(value).map_err(|_| Err::custom("enum number out of range"))?;
+                if E::is_variant_skipped_for_deserialization(value) {
+                    return Err(Err::custom("skipped enum variant cannot be deserialized"));
+                }
                 Ok(CanonicalEnumValue(value, PhantomData))
             }
         }
