@@ -1,0 +1,5 @@
+error: serde(bound = ...) is not supported because prost-canonical-serde does not generate generic impls
+ --> tests/ui/unsupported_bound.rs:9:9
+  |
+9 | #[serde(bound(serialize = "T: MySerTrait", deserialize = "T: MyDeTrait"))]
+  |         ^^^^^

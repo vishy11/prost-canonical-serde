@@ -2077,6 +2077,11 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                     meta.path.span(),
                     "untagged enums are not supported in prost-canonical-serde",
                 ));
+            } else if meta.path.is_ident("bound") {
+                return Err(syn::Error::new(
+                    meta.path.span(),
+                    "serde(bound = ...) is not supported because prost-canonical-serde does not generate generic impls",
+                ));
             }
             Ok(())
         })?;
