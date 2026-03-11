@@ -3,7 +3,7 @@ extern crate alloc;
 use prost_canonical_serde::{CanonicalDeserialize, CanonicalSerialize};
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
-#[serde(deny_unknown_fields)]
+#[prost_canonical_serde(deny_unknown_fields)]
 struct Inner {
     #[prost(string, tag = "1")]
     value: String,

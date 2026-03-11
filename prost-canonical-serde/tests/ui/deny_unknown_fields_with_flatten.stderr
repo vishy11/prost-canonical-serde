@@ -1,5 +1,5 @@
 error: deny_unknown_fields is not supported with flatten
   --> tests/ui/deny_unknown_fields_with_flatten.rs:12:1
    |
-12 | #[serde(deny_unknown_fields)]
+12 | #[prost_canonical_serde(deny_unknown_fields)]
    | ^

@@ -12,7 +12,7 @@ use serde::ser::{self, Impossible, SerializeStruct, Serializer};
 use serde_json::json;
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(rename = "wire_message")]
+#[prost_canonical_serde(rename = "wire_message")]
 struct RenamedMessage {
     #[prost(string, tag = "1")]
     #[prost_canonical_serde(proto_name = "value", json_name = "value")]
@@ -20,28 +20,28 @@ struct RenamedMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(crate = "renamed_serde")]
+#[prost_canonical_serde(crate = "renamed_serde")]
 struct CustomSerdePathMessage {
     #[prost(string, tag = "1")]
     value: String,
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(deny_unknown_fields)]
+#[prost_canonical_serde(deny_unknown_fields)]
 struct StrictMessage {
     #[prost(string, tag = "1")]
     note: String,
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(expecting = "a message object")]
+#[prost_canonical_serde(expecting = "a message object")]
 struct ExpectingMessage {
     #[prost(string, tag = "1")]
     note: String,
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(default)]
+#[prost_canonical_serde(default)]
 struct ContainerDefaultMessage {
     #[prost(int64, tag = "1")]
     count: i64,
@@ -59,7 +59,7 @@ impl Default for ContainerDefaultMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(default = "custom_default_message")]
+#[prost_canonical_serde(default = "custom_default_message")]
 struct PathDefaultMessage {
     #[prost(int64, tag = "1")]
     count: i64,
@@ -87,7 +87,7 @@ struct IntoWireMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(into = "IntoWireMessage")]
+#[prost_canonical_serde(into = "IntoWireMessage")]
 struct IntoConvertedMessage {
     #[prost(int64, tag = "1")]
     count: i64,
@@ -102,7 +102,7 @@ impl From<IntoConvertedMessage> for IntoWireMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(from = "FromWireMessage")]
+#[prost_canonical_serde(from = "FromWireMessage")]
 struct FromConvertedMessage {
     #[prost(int64, tag = "1")]
     count: i64,
@@ -123,7 +123,7 @@ enum TryFromWireChoice {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(try_from = "TryFromWireChoice")]
+#[prost_canonical_serde(try_from = "TryFromWireChoice")]
 enum TryFromConvertedChoice {
     #[prost(string, tag = "1")]
     Value(String),
@@ -155,7 +155,7 @@ enum IntoWireChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(into = "IntoWireChoice")]
+#[prost_canonical_serde(into = "IntoWireChoice")]
 enum IntoConvertedChoice {
     #[prost(string, tag = "1")]
     Value(String),
@@ -170,7 +170,7 @@ impl From<IntoConvertedChoice> for IntoWireChoice {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(
+#[prost_canonical_serde(
     rename(serialize = "wire_tag_ser", deserialize = "wire_tag_de"),
     tag = "type"
 )]
@@ -180,7 +180,7 @@ struct TaggedMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(rename(serialize = "wire_box_ser", deserialize = "wire_box_de"))]
+#[prost_canonical_serde(rename(serialize = "wire_box_ser", deserialize = "wire_box_de"))]
 #[prost_canonical_serde(transparent)]
 struct RenamedTransparent {
     #[prost(string, tag = "1")]
@@ -189,7 +189,7 @@ struct RenamedTransparent {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(rename(serialize = "wire_choice_ser", deserialize = "wire_choice_de"))]
+#[prost_canonical_serde(rename(serialize = "wire_choice_ser", deserialize = "wire_choice_de"))]
 enum RenamedChoice {
     #[prost(string, tag = "1")]
     #[prost_canonical_serde(proto_name = "value_choice", json_name = "valueChoice")]
@@ -197,21 +197,21 @@ enum RenamedChoice {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(crate = "renamed_serde")]
+#[prost_canonical_serde(crate = "renamed_serde")]
 enum CustomSerdePathChoice {
     #[prost(string, tag = "1")]
     Value(String),
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(deny_unknown_fields)]
+#[prost_canonical_serde(deny_unknown_fields)]
 enum StrictChoice {
     #[prost(string, tag = "1")]
     Value(String),
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-#[serde(expecting = "a choice object")]
+#[prost_canonical_serde(expecting = "a choice object")]
 enum ExpectingChoice {
     #[prost(string, tag = "1")]
     Value(String),
@@ -853,14 +853,14 @@ fn tagged_struct_rejects_wrong_tag_on_deserialize() {
 macro_rules! rename_all_case_tests {
     ($struct_name:ident, $enum_name:ident, $struct_test:ident, $enum_test:ident, [$($serde_attr:tt)+], $serialize_key:literal, $deserialize_key:literal) => {
         #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-        #[serde($($serde_attr)+)]
+        #[prost_canonical_serde($($serde_attr)+)]
         struct $struct_name {
             #[prost(string, tag = "1")]
             http_status_code: String,
         }
 
         #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-        #[serde($($serde_attr)+)]
+        #[prost_canonical_serde($($serde_attr)+)]
         enum $enum_name {
             #[prost(string, tag = "1")]
             HttpStatusCode(String),

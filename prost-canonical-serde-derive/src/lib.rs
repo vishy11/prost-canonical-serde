@@ -26,7 +26,7 @@ use syn::{
 };
 
 /// Derives `CanonicalSerialize` and `serde::Serialize` for prost messages.
-#[proc_macro_derive(CanonicalSerialize, attributes(prost, prost_canonical_serde, serde))]
+#[proc_macro_derive(CanonicalSerialize, attributes(prost, prost_canonical_serde))]
 pub fn derive_canonical_serialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_serialize(&input) {
@@ -36,7 +36,7 @@ pub fn derive_canonical_serialize(input: TokenStream) -> TokenStream {
 }
 
 /// Derives `CanonicalDeserialize` and `serde::Deserialize` for prost messages.
-#[proc_macro_derive(CanonicalDeserialize, attributes(prost, prost_canonical_serde, serde))]
+#[proc_macro_derive(CanonicalDeserialize, attributes(prost, prost_canonical_serde))]
 pub fn derive_canonical_deserialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_deserialize(&input) {
@@ -2165,10 +2165,9 @@ fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
 }
 
 fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
-    let attrs = parse_canonical_attrs(&input.attrs)?;
     let default_name = input.ident.to_string();
     let mut container = ContainerAttrs {
-        transparent: attrs.transparent,
+        transparent: false,
         serialize_name: default_name.clone(),
         deserialize_name: default_name,
         serialize_rename_all: None,
@@ -2183,12 +2182,14 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
     };
 
     for attr in &input.attrs {
-        if !attr.path().is_ident("serde") {
+        if !attr.path().is_ident("prost_canonical_serde") {
             continue;
         }
 
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("rename") {
+            if meta.path.is_ident("transparent") {
+                container.transparent = true;
+            } else if meta.path.is_ident("rename") {
                 if meta.input.peek(Token![=]) {
                     let value: LitStr = meta.value()?.parse()?;
                     let name = value.value();
@@ -2268,7 +2269,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                     meta.path.span(),
                 )?;
             } else {
-                return Err(unsupported_serde_container_attr(&meta.path));
+                return Err(unsupported_prost_canonical_serde_container_attr(&meta.path));
             }
             Ok(())
         })?;
@@ -2277,7 +2278,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
     Ok(container)
 }
 
-fn unsupported_serde_container_attr(path: &syn::Path) -> syn::Error {
+fn unsupported_prost_canonical_serde_container_attr(path: &syn::Path) -> syn::Error {
     let attr = path
         .segments
         .last()
@@ -2285,7 +2286,7 @@ fn unsupported_serde_container_attr(path: &syn::Path) -> syn::Error {
         .unwrap_or_else(|| "attribute".to_string());
     syn::Error::new(
         path.span(),
-        format!("unsupported serde container attribute `{attr}`"),
+        format!("unsupported prost_canonical_serde container attribute `{attr}`"),
     )
 }
 
@@ -2297,7 +2298,7 @@ fn set_serialize_via(
     if !matches!(slot, SerializeVia::None) {
         return Err(syn::Error::new(
             span,
-            "only one serde into attribute may be specified",
+            "only one prost_canonical_serde into attribute may be specified",
         ));
     }
     *slot = value;
@@ -2312,7 +2313,7 @@ fn set_deserialize_via(
     if !matches!(slot, DeserializeVia::None) {
         return Err(syn::Error::new(
             span,
-            "only one of serde from and try_from may be specified",
+            "only one of prost_canonical_serde from and try_from may be specified",
         ));
     }
     *slot = value;

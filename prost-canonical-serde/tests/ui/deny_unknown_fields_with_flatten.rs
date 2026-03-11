@@ -9,7 +9,7 @@ struct Inner {
 }
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
-#[serde(deny_unknown_fields)]
+#[prost_canonical_serde(deny_unknown_fields)]
 struct Outer {
     #[prost(message, optional, tag = "1")]
     #[prost_canonical_serde(flatten)]
