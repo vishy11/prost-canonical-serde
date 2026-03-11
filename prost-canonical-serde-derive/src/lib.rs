@@ -73,6 +73,9 @@ fn expand_serialize_struct(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
+    if let Some(tokens) = expand_serialize_conversion(name, &container_attrs.serialize_via) {
+        return Ok(tokens);
+    }
     let fields = extract_fields(&data.fields, &container_attrs)?;
     let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
@@ -167,6 +170,40 @@ fn expand_serialize_struct(
                     <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
                     map.end()
                 }
+            }
+        }
+
+        impl ::serde::Serialize for #name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
+                    self,
+                    serializer,
+                )
+            }
+        }
+    })
+}
+
+fn expand_serialize_conversion(
+    name: &Ident,
+    serialize_via: &SerializeVia,
+) -> Option<proc_macro2::TokenStream> {
+    let into_ty = match serialize_via {
+        SerializeVia::None => return None,
+        SerializeVia::Into(into_ty) => into_ty,
+    };
+
+    Some(quote! {
+        impl ::prost_canonical_serde::CanonicalSerialize for #name {
+            fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                let __pcs_value: #into_ty = <Self as ::core::clone::Clone>::clone(self).into();
+                ::serde::Serialize::serialize(&__pcs_value, serializer)
             }
         }
 
@@ -551,21 +588,15 @@ fn expand_serialize_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let container_attrs = parse_container_attrs(input)?;
-    if !matches!(&container_attrs.default, ContainerDefault::None) {
-        return Err(syn::Error::new(
-            input.span(),
-            "default is only supported on structs in prost-canonical-serde",
-        ));
-    }
-    if container_attrs.tag.is_some() {
-        return Err(syn::Error::new(
-            input.span(),
-            "tag is not supported on enums in prost-canonical-serde",
-        ));
-    }
     if is_oneof_enum(data) {
-        let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
         let oneof_impl = expand_oneof_impl(input, data, &container_attrs)?;
+        if let Some(tokens) = expand_serialize_conversion(name, &container_attrs.serialize_via) {
+            return Ok(quote! {
+                #oneof_impl
+                #tokens
+            });
+        }
+        let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
         return Ok(quote! {
             #oneof_impl
             impl ::prost_canonical_serde::CanonicalSerialize for #name {
@@ -595,7 +626,21 @@ fn expand_serialize_enum(
             }
         });
     }
-
+    if let Some(tokens) = expand_serialize_conversion(name, &container_attrs.serialize_via) {
+        return Ok(tokens);
+    }
+    if !matches!(&container_attrs.default, ContainerDefault::None) {
+        return Err(syn::Error::new(
+            input.span(),
+            "default is only supported on structs in prost-canonical-serde",
+        ));
+    }
+    if container_attrs.tag.is_some() {
+        return Err(syn::Error::new(
+            input.span(),
+            "tag is not supported on enums in prost-canonical-serde",
+        ));
+    }
     Ok(quote! {
         impl ::prost_canonical_serde::ProstEnum for #name {
             fn from_i32(value: i32) -> ::core::option::Option<Self> {
@@ -2100,6 +2145,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         deserialize_name: default_name,
         serialize_rename_all: None,
         deserialize_rename_all: None,
+        serialize_via: SerializeVia::None,
         deserialize_via: DeserializeVia::None,
         deny_unknown_fields: false,
         tag: None,
@@ -2153,6 +2199,14 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
             } else if meta.path.is_ident("tag") {
                 let value: LitStr = meta.value()?.parse()?;
                 container.tag = Some(value.value());
+            } else if meta.path.is_ident("into") {
+                let value: LitStr = meta.value()?.parse()?;
+                let into_ty = syn::parse_str::<Type>(&value.value())?;
+                set_serialize_via(
+                    &mut container.serialize_via,
+                    SerializeVia::Into(into_ty),
+                    meta.path.span(),
+                )?;
             } else if meta.path.is_ident("default") {
                 if meta.input.peek(Token![=]) {
                     let value: LitStr = meta.value()?.parse()?;
@@ -2199,6 +2253,21 @@ fn unsupported_serde_container_attr(path: &syn::Path) -> syn::Error {
     )
 }
 
+fn set_serialize_via(
+    slot: &mut SerializeVia,
+    value: SerializeVia,
+    span: Span,
+) -> syn::Result<()> {
+    if !matches!(slot, SerializeVia::None) {
+        return Err(syn::Error::new(
+            span,
+            "only one serde into attribute may be specified",
+        ));
+    }
+    *slot = value;
+    Ok(())
+}
+
 fn set_deserialize_via(
     slot: &mut DeserializeVia,
     value: DeserializeVia,
@@ -2228,6 +2297,7 @@ struct ContainerAttrs {
     deserialize_name: String,
     serialize_rename_all: Option<RenameRule>,
     deserialize_rename_all: Option<RenameRule>,
+    serialize_via: SerializeVia,
     deserialize_via: DeserializeVia,
     deny_unknown_fields: bool,
     tag: Option<String>,
@@ -2238,6 +2308,11 @@ enum ContainerDefault {
     None,
     Default,
     Path(Path),
+}
+
+enum SerializeVia {
+    None,
+    Into(Type),
 }
 
 enum DeserializeVia {

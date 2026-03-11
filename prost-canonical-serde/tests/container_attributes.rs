@@ -65,6 +65,27 @@ struct FromWireMessage {
     count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct IntoWireMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(into = "IntoWireMessage")]
+struct IntoConvertedMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+}
+
+impl From<IntoConvertedMessage> for IntoWireMessage {
+    fn from(value: IntoConvertedMessage) -> Self {
+        Self {
+            count: value.count + 1,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(from = "FromWireMessage")]
 struct FromConvertedMessage {
@@ -108,6 +129,27 @@ impl TryFrom<TryFromWireChoice> for TryFromConvertedChoice {
         match value {
             TryFromWireChoice::Value(text) if text.is_empty() => Err(TryFromChoiceError("empty values are not allowed")),
             TryFromWireChoice::Value(text) => Ok(Self::Value(text.to_ascii_uppercase())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+enum IntoWireChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
+}
+
+#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(into = "IntoWireChoice")]
+enum IntoConvertedChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
+}
+
+impl From<IntoConvertedChoice> for IntoWireChoice {
+    fn from(value: IntoConvertedChoice) -> Self {
+        match value {
+            IntoConvertedChoice::Value(text) => Self::Value(text.to_ascii_uppercase()),
         }
     }
 }
@@ -666,11 +708,27 @@ fn container_from_deserializes_through_intermediate_type() {
 }
 
 #[test]
+fn container_into_serializes_through_intermediate_type() {
+    let value = serde_json::to_value(&IntoConvertedMessage { count: 7 })
+        .expect("serialize via into");
+
+    assert_eq!(value, json!({ "count": "8" }));
+}
+
+#[test]
 fn container_try_from_deserializes_through_intermediate_type() {
     let value: TryFromConvertedChoice =
         serde_json::from_value(json!({ "value": "demo" })).expect("deserialize via try_from");
 
     assert_eq!(value, TryFromConvertedChoice::Value("DEMO".to_string()));
+}
+
+#[test]
+fn container_into_serializes_oneof_through_intermediate_type() {
+    let value = serde_json::to_value(&IntoConvertedChoice::Value("demo".to_string()))
+        .expect("serialize oneof via into");
+
+    assert_eq!(value, json!({ "value": "DEMO" }));
 }
 
 #[test]
