@@ -2002,7 +2002,11 @@ fn name_for_field(
     attrs: &CanonicalAttrs,
     rename_rule: Option<RenameRule>,
     proto_name: &str,
+    explicit_name: Option<&String>,
 ) -> String {
+    if let Some(name) = explicit_name {
+        return name.clone();
+    }
     if let Some(json_name) = &attrs.json_name {
         return json_name.clone();
     }
@@ -2186,8 +2190,8 @@ impl FieldInfo {
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
         let (is_oneof, enum_path) = parse_prost_attrs(&field.attrs)?;
-        let attrs = parse_canonical_attrs(&field.attrs)?;
-        if attrs.transparent {
+        let attrs = parse_field_attrs(&field.attrs)?;
+        if attrs.canonical.transparent {
             return Err(syn::Error::new(
                 field.span(),
                 "transparent is only supported on containers",
@@ -2209,17 +2213,21 @@ impl FieldInfo {
             }
         }
 
-        if attrs.flatten {
+        if attrs.canonical.flatten {
             if is_oneof {
                 return Err(syn::Error::new(
                     field.span(),
                     "flatten is not supported on oneof fields",
                 ));
             }
-            if attrs.proto_name.is_some() || attrs.json_name.is_some() {
+            if attrs.serialize_name.is_some()
+                || attrs.deserialize_name.is_some()
+                || attrs.canonical.proto_name.is_some()
+                || attrs.canonical.json_name.is_some()
+            {
                 return Err(syn::Error::new(
                     field.span(),
-                    "flatten fields cannot set proto_name or json_name",
+                    "flatten fields cannot set rename, proto_name, or json_name",
                 ));
             }
             if !is_message_like(&kind) {
@@ -2231,20 +2239,23 @@ impl FieldInfo {
         }
 
         let proto_name = attrs
+            .canonical
             .proto_name
             .clone()
             .unwrap_or_else(|| ident.to_string());
         let serialize_name = name_for_field(
             &ident,
-            &attrs,
+            &attrs.canonical,
             container_attrs.serialize_rename_all,
             &proto_name,
+            attrs.serialize_name.as_ref(),
         );
         let deserialize_name = name_for_field(
             &ident,
-            &attrs,
+            &attrs.canonical,
             container_attrs.deserialize_rename_all,
             &proto_name,
+            attrs.deserialize_name.as_ref(),
         );
 
         Ok(Self {
@@ -2253,7 +2264,7 @@ impl FieldInfo {
             kind,
             enum_path,
             is_oneof,
-            is_flatten: attrs.flatten,
+            is_flatten: attrs.canonical.flatten,
             serialize_name,
             deserialize_name,
             proto_name,
@@ -2283,8 +2294,12 @@ impl FieldInfo {
     }
 }
 
-fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
-    let mut parsed = CanonicalAttrs::default();
+fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
+    let mut field = FieldAttrs {
+        canonical: CanonicalAttrs::default(),
+        serialize_name: None,
+        deserialize_name: None,
+    };
 
     for attr in attrs {
         if !attr.path().is_ident("prost_canonical_serde") {
@@ -2292,22 +2307,40 @@ fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
         }
 
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("proto_name") {
+            if meta.path.is_ident("rename") {
+                if meta.input.peek(Token![=]) {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let name = value.value();
+                    field.serialize_name = Some(name.clone());
+                    field.deserialize_name = Some(name);
+                } else {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("serialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            field.serialize_name = Some(value.value());
+                        } else if nested.path.is_ident("deserialize") {
+                            let value: LitStr = nested.value()?.parse()?;
+                            field.deserialize_name = Some(value.value());
+                        }
+                        Ok(())
+                    })?;
+                }
+            } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                parsed.proto_name = Some(value.value());
+                field.canonical.proto_name = Some(value.value());
             } else if meta.path.is_ident("json_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                parsed.json_name = Some(value.value());
+                field.canonical.json_name = Some(value.value());
             } else if meta.path.is_ident("transparent") {
-                parsed.transparent = true;
+                field.canonical.transparent = true;
             } else if meta.path.is_ident("flatten") {
-                parsed.flatten = true;
+                field.canonical.flatten = true;
             }
             Ok(())
         })?;
     }
 
-    Ok(parsed)
+    Ok(field)
 }
 
 fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
@@ -2543,6 +2576,12 @@ struct VariantAttrs {
     aliases: Vec<String>,
     skip_serializing: bool,
     skip_deserializing: bool,
+}
+
+struct FieldAttrs {
+    canonical: CanonicalAttrs,
+    serialize_name: Option<String>,
+    deserialize_name: Option<String>,
 }
 
 struct ContainerAttrs {
