@@ -36,10 +36,10 @@ extern crate alloc;
 mod canonical;
 
 pub use canonical::{
-    Canonical, CanonicalEnum, CanonicalEnumMap, CanonicalEnumMapRef, CanonicalEnumOption,
-    CanonicalEnumSeq, CanonicalEnumValue, CanonicalEnumVec, CanonicalError, CanonicalMap,
-    CanonicalMapKey, CanonicalMapRef, CanonicalMapType, CanonicalOption, CanonicalSeq,
-    CanonicalValue, CanonicalVec,
+    BufferedValue, Canonical, CanonicalEnum, CanonicalEnumMap, CanonicalEnumMapRef,
+    CanonicalEnumOption, CanonicalEnumSeq, CanonicalEnumValue, CanonicalEnumVec, CanonicalError,
+    CanonicalMap, CanonicalMapKey, CanonicalMapRef, CanonicalMapType, CanonicalOption,
+    CanonicalSeq, CanonicalValue, CanonicalVec,
 };
 
 pub use prost_canonical_serde_derive::{CanonicalDeserialize, CanonicalSerialize};
@@ -87,6 +87,18 @@ pub trait ProstOneof: Sized {
     fn try_deserialize<'de, A>(key: &str, map: &mut A) -> Result<OneofMatch<Self>, A::Error>
     where
         A: serde::de::MapAccess<'de>;
+
+    fn matches_field_name(key: &str) -> bool;
+}
+
+/// Internal helper trait implemented by prost-generated messages.
+#[doc(hidden)]
+pub trait ProstMessage: Sized {
+    fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
+    where
+        S: serde::ser::SerializeMap;
+
+    fn matches_field_name(key: &str) -> bool;
 }
 
 /// Internal helper used to indicate oneof match outcomes.

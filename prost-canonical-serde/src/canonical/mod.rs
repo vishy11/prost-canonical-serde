@@ -4,6 +4,7 @@
 //! prost-generated types and then use `serde_json` directly. This module exists
 //! for advanced cases, such as wrapping values when manual control is needed.
 
+mod content;
 mod enums;
 mod error;
 mod map;
@@ -12,6 +13,7 @@ mod scalar;
 mod wkt;
 mod wrappers;
 
+pub use content::BufferedValue;
 pub use enums::{
     CanonicalEnum, CanonicalEnumOption, CanonicalEnumSeq, CanonicalEnumValue, CanonicalEnumVec,
 };

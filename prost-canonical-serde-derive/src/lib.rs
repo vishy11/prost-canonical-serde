@@ -72,14 +72,39 @@ fn expand_serialize_struct(
     data: &syn::DataStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
+    let container_attrs = parse_canonical_attrs(&input.attrs)?;
     let fields = extract_fields(&data.fields)?;
+
+    if container_attrs.transparent {
+        return expand_serialize_transparent_struct(name, &fields);
+    }
+
     let mut field_serializers = Vec::new();
+    let mut field_match_arms = Vec::new();
 
     for field in &fields {
         field_serializers.push(serialize_field(field));
+        field_match_arms.push(field_match_arm(field)?);
     }
 
     Ok(quote! {
+        impl ::prost_canonical_serde::ProstMessage for #name {
+            fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
+            where
+                S: ::serde::ser::SerializeMap,
+            {
+                #(#field_serializers)*
+                Ok(())
+            }
+
+            fn matches_field_name(key: &str) -> bool {
+                match key {
+                    #(#field_match_arms)*
+                    _ => false,
+                }
+            }
+        }
+
         impl ::prost_canonical_serde::CanonicalSerialize for #name {
             fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
@@ -87,7 +112,7 @@ fn expand_serialize_struct(
             {
                 use ::serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(None)?;
-                #(#field_serializers)*
+                <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
                 map.end()
             }
         }
@@ -111,20 +136,35 @@ fn expand_deserialize_struct(
     data: &syn::DataStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
+    let container_attrs = parse_canonical_attrs(&input.attrs)?;
     let map_ident = Ident::new("__pcs_map", Span::call_site());
     let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
     let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
     let oneof_value_ident = Ident::new("__pcs_oneof_value", Span::call_site());
     let fields = extract_fields(&data.fields)?;
+
+    if container_attrs.transparent {
+        return expand_deserialize_transparent_struct(name, &fields);
+    }
+
     let mut field_inits = Vec::new();
     let mut field_names = Vec::new();
     let mut match_arms = Vec::new();
     let mut oneof_checks = Vec::new();
+    let mut flatten_checks = Vec::new();
+    let mut flatten_finishes = Vec::new();
 
     for field in &fields {
         let ident = field.ident.clone();
         field_names.push(ident.clone());
         field_inits.push(init_field(field));
+
+        if field.is_flatten {
+            field_inits.push(init_flatten_buffer(field)?);
+            flatten_checks.push(flatten_match_arm(field, &key_str_ident, &map_ident)?);
+            flatten_finishes.push(finish_flatten_field(field)?);
+            continue;
+        }
 
         if field.is_oneof {
             let oneof_type = field
@@ -181,10 +221,13 @@ fn expand_deserialize_struct(
                             match #key_str_ident {
                                 #(#match_arms)*
                                 _ => {
+                                    #(#flatten_checks)*
                                     let _ = #map_ident.next_value::<::serde::de::IgnoredAny>()?;
                                 }
                             }
                         }
+
+                        #(#flatten_finishes)*
 
                         Ok(#name {
                             #(#field_names),*
@@ -193,6 +236,99 @@ fn expand_deserialize_struct(
                 }
 
                 deserializer.deserialize_map(Visitor)
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for #name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
+                    deserializer,
+                )
+            }
+        }
+    })
+}
+
+fn expand_serialize_transparent_struct(
+    name: &Ident,
+    fields: &[FieldInfo],
+) -> syn::Result<proc_macro2::TokenStream> {
+    let field = fields
+        .first()
+        .ok_or_else(|| syn::Error::new(name.span(), "transparent structs must have one field"))?;
+    if fields.len() != 1 {
+        return Err(syn::Error::new(
+            name.span(),
+            "transparent structs must have exactly one field",
+        ));
+    }
+    if field.is_oneof || field.is_flatten {
+        return Err(syn::Error::new(
+            field.ident.span(),
+            "transparent fields cannot also be oneof or flatten",
+        ));
+    }
+
+    let serialize_expr = serialize_transparent_field(field);
+
+    Ok(quote! {
+        impl ::prost_canonical_serde::CanonicalSerialize for #name {
+            fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                #serialize_expr
+            }
+        }
+
+        impl ::serde::Serialize for #name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
+                    self,
+                    serializer,
+                )
+            }
+        }
+    })
+}
+
+fn expand_deserialize_transparent_struct(
+    name: &Ident,
+    fields: &[FieldInfo],
+) -> syn::Result<proc_macro2::TokenStream> {
+    let field = fields
+        .first()
+        .ok_or_else(|| syn::Error::new(name.span(), "transparent structs must have one field"))?;
+    if fields.len() != 1 {
+        return Err(syn::Error::new(
+            name.span(),
+            "transparent structs must have exactly one field",
+        ));
+    }
+    if field.is_oneof || field.is_flatten {
+        return Err(syn::Error::new(
+            field.ident.span(),
+            "transparent fields cannot also be oneof or flatten",
+        ));
+    }
+
+    let ident = &field.ident;
+    let deserialize_expr = deserialize_transparent_field(field)?;
+
+    Ok(quote! {
+        impl ::prost_canonical_serde::CanonicalDeserialize for #name {
+            fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                let #ident = #deserialize_expr;
+                Ok(#name { #ident })
             }
         }
 
@@ -394,14 +530,21 @@ fn expand_oneof_impl(
     let name = &input.ident;
     let mut serialize_arms = Vec::new();
     let mut deserialize_arms = Vec::new();
+    let mut matches_arms = Vec::new();
 
     for variant in &data.variants {
         let ident = &variant.ident;
-        let (proto_name_attr, json_name_attr) = parse_canonical_attrs(&variant.attrs)?;
+        let attrs = parse_canonical_attrs(&variant.attrs)?;
+        if attrs.transparent || attrs.flatten {
+            return Err(syn::Error::new(
+                ident.span(),
+                "transparent and flatten are not supported on oneof variants",
+            ));
+        }
         let (value_ty, kind, enum_path) = parse_variant(variant)?;
         let fallback = lower_camel(&ident.to_string());
-        let proto_name = proto_name_attr.unwrap_or_else(|| fallback.clone());
-        let json_name = json_name_attr.unwrap_or_else(|| fallback.clone());
+        let proto_name = attrs.proto_name.unwrap_or_else(|| fallback.clone());
+        let json_name = attrs.json_name.unwrap_or_else(|| fallback.clone());
         let json_name_literal = LitStr::new(&json_name, ident.span());
         let proto_name_literal = LitStr::new(&proto_name, ident.span());
         let value_ident = Ident::new("value", ident.span());
@@ -437,6 +580,9 @@ fn expand_oneof_impl(
                 Ok(::prost_canonical_serde::OneofMatch::Matched(value.map(Self::#ident)))
             }
         });
+        matches_arms.push(quote! {
+            #match_pat => true
+        });
     }
 
     Ok(quote! {
@@ -460,6 +606,13 @@ fn expand_oneof_impl(
                     _ => Ok(::prost_canonical_serde::OneofMatch::NoMatch),
                 }
             }
+
+            fn matches_field_name(key: &str) -> bool {
+                match key {
+                    #(#matches_arms),*,
+                    _ => false,
+                }
+            }
         }
     })
 }
@@ -468,10 +621,25 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     let ident = &field.ident;
     let json_name = LitStr::new(&field.json_name, ident.span());
 
+    if field.is_flatten {
+        let target_ty = field.flatten_target_ty();
+        return if field.is_option_message() {
+            quote! {
+                if let Some(value) = &self.#ident {
+                    <#target_ty as ::prost_canonical_serde::ProstMessage>::serialize_fields(value, map)?;
+                }
+            }
+        } else {
+            quote! {
+                <#target_ty as ::prost_canonical_serde::ProstMessage>::serialize_fields(&self.#ident, map)?;
+            }
+        };
+    }
+
     if field.is_oneof {
         return quote! {
             if let Some(value) = &self.#ident {
-                ::prost_canonical_serde::ProstOneof::serialize_field(value, &mut map)?;
+                ::prost_canonical_serde::ProstOneof::serialize_field(value, map)?;
             }
         };
     }
@@ -547,6 +715,66 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     }
 }
 
+fn serialize_transparent_field(field: &FieldInfo) -> proc_macro2::TokenStream {
+    let ident = &field.ident;
+
+    match &field.kind {
+        Kind::Option(inner) => {
+            let value_expr = serialize_value_expr(
+                inner,
+                &Ident::new("value", ident.span()),
+                field.enum_path.as_ref(),
+            );
+            quote! {
+                if let Some(value) = &self.#ident {
+                    let value = #value_expr;
+                    ::serde::Serialize::serialize(&value, serializer)
+                } else {
+                    serializer.serialize_unit()
+                }
+            }
+        }
+        Kind::Vec(inner) => {
+            if let Kind::Enum(path) = inner.as_ref() {
+                quote! {
+                    let value = ::prost_canonical_serde::CanonicalEnumSeq::<#path>::new(&self.#ident);
+                    ::serde::Serialize::serialize(&value, serializer)
+                }
+            } else {
+                quote! {
+                    let value = ::prost_canonical_serde::CanonicalSeq::new(&self.#ident);
+                    ::serde::Serialize::serialize(&value, serializer)
+                }
+            }
+        }
+        Kind::Map(_, _, value_kind) => {
+            if let Kind::Enum(path) = value_kind.as_ref() {
+                quote! {
+                    let value = ::prost_canonical_serde::CanonicalEnumMapRef::<#path, _>::new(&self.#ident);
+                    ::serde::Serialize::serialize(&value, serializer)
+                }
+            } else {
+                quote! {
+                    let value = ::prost_canonical_serde::CanonicalMapRef::new(&self.#ident);
+                    ::serde::Serialize::serialize(&value, serializer)
+                }
+            }
+        }
+        _ => {
+            let value_expr = serialize_value_expr(
+                &field.kind,
+                &Ident::new("value", ident.span()),
+                field.enum_path.as_ref(),
+            );
+            quote! {
+                let value = &self.#ident;
+                let value = #value_expr;
+                ::serde::Serialize::serialize(&value, serializer)
+            }
+        }
+    }
+}
+
 fn init_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
@@ -575,6 +803,61 @@ fn init_field(field: &FieldInfo) -> proc_macro2::TokenStream {
                 let mut #ident = #default_expr;
             }
         }
+    }
+}
+
+fn init_flatten_buffer(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
+    let flatten_ident = field.flatten_buffer_ident()?;
+    Ok(quote! {
+        let mut #flatten_ident = ::alloc::vec::Vec::<(
+            ::alloc::string::String,
+            ::prost_canonical_serde::BufferedValue,
+        )>::new();
+    })
+}
+
+fn flatten_match_arm(
+    field: &FieldInfo,
+    key_ident: &Ident,
+    map_ident: &Ident,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let flatten_ident = field.flatten_buffer_ident()?;
+    let target_ty = field.flatten_target_ty();
+    Ok(quote! {
+        if <#target_ty as ::prost_canonical_serde::ProstMessage>::matches_field_name(#key_ident) {
+            let value = #map_ident.next_value::<::prost_canonical_serde::BufferedValue>()?;
+            #flatten_ident.push((::alloc::borrow::ToOwned::to_owned(#key_ident), value));
+            continue;
+        }
+    })
+}
+
+fn finish_flatten_field(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
+    let ident = &field.ident;
+    let flatten_ident = field.flatten_buffer_ident()?;
+    let target_ty = field.flatten_target_ty();
+
+    if field.is_option_message() {
+        Ok(quote! {
+            if !#flatten_ident.is_empty() {
+                #ident = Some(
+                    <::prost_canonical_serde::CanonicalValue<#target_ty> as ::serde::Deserialize>::deserialize(
+                        ::prost_canonical_serde::BufferedValue::Map(#flatten_ident),
+                    )
+                    .map_err(::serde::de::Error::custom)?
+                    .0,
+                );
+            }
+        })
+    } else {
+        Ok(quote! {
+            #ident =
+                <::prost_canonical_serde::CanonicalValue<#target_ty> as ::serde::Deserialize>::deserialize(
+                    ::prost_canonical_serde::BufferedValue::Map(#flatten_ident),
+                )
+                .map_err(::serde::de::Error::custom)?
+                .0;
+        })
     }
 }
 
@@ -686,6 +969,121 @@ fn deserialize_match_arm(
                 }
             }
         }),
+    }
+}
+
+fn deserialize_transparent_field(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
+    let ident = &field.ident;
+    let ty = &field.ty;
+
+    match &field.kind {
+        Kind::Option(inner) => {
+            let inner_ty = field
+                .option_inner
+                .as_ref()
+                .ok_or_else(|| syn::Error::new(ident.span(), "missing Option inner type"))?;
+            if let Kind::Enum(path) = inner.as_ref() {
+                let path = field.enum_path.as_ref().unwrap_or(path);
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalEnumOption<#path> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            } else {
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalOption<#inner_ty> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            }
+        }
+        Kind::Vec(inner) => {
+            if let Kind::Enum(path) = inner.as_ref() {
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalEnumVec<#path> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            } else {
+                let inner_ty = field
+                    .vec_inner
+                    .as_ref()
+                    .ok_or_else(|| syn::Error::new(ident.span(), "missing Vec inner type"))?;
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalVec<#inner_ty> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            }
+        }
+        Kind::Map(_, _, value_kind) => {
+            if let Kind::Enum(path) = value_kind.as_ref() {
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalEnumMap<#path, #ty> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            } else {
+                Ok(quote! {
+                    <::prost_canonical_serde::CanonicalMap<#ty> as ::serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0
+                })
+            }
+        }
+        Kind::Enum(path) => {
+            let path = field.enum_path.as_ref().unwrap_or(path);
+            Ok(quote! {
+                <::prost_canonical_serde::CanonicalEnumValue<#path> as ::serde::Deserialize>::deserialize(
+                    deserializer,
+                )?
+                .0
+            })
+        }
+        _ => Ok(quote! {
+            <::prost_canonical_serde::CanonicalValue<#ty> as ::serde::Deserialize>::deserialize(
+                deserializer,
+            )?
+            .0
+        }),
+    }
+}
+
+fn field_match_arm(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
+    if field.is_flatten {
+        let target_ty = field.flatten_target_ty();
+        return Ok(quote! {
+            key if <#target_ty as ::prost_canonical_serde::ProstMessage>::matches_field_name(key) => true,
+        });
+    }
+
+    if field.is_oneof {
+        let oneof_ty = field
+            .oneof_type
+            .as_ref()
+            .ok_or_else(|| syn::Error::new(field.ident.span(), "oneof field must be Option"))?;
+        return Ok(quote! {
+            key if <#oneof_ty as ::prost_canonical_serde::ProstOneof>::matches_field_name(key) => true,
+        });
+    }
+
+    let ident = &field.ident;
+    let json_name = LitStr::new(&field.json_name, ident.span());
+    let proto_name = LitStr::new(&field.proto_name, ident.span());
+    if field.json_name == field.proto_name {
+        Ok(quote! {
+            #json_name => true,
+        })
+    } else {
+        Ok(quote! {
+            #json_name | #proto_name => true,
+        })
     }
 }
 
@@ -1117,6 +1515,7 @@ struct FieldInfo {
     kind: Kind,
     enum_path: Option<Path>,
     is_oneof: bool,
+    is_flatten: bool,
     json_name: String,
     proto_name: String,
     oneof_type: Option<Type>,
@@ -1131,7 +1530,13 @@ impl FieldInfo {
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
         let (is_oneof, enum_path) = parse_prost_attrs(&field.attrs)?;
-        let (proto_name_attr, json_name_attr) = parse_canonical_attrs(&field.attrs)?;
+        let attrs = parse_canonical_attrs(&field.attrs)?;
+        if attrs.transparent {
+            return Err(syn::Error::new(
+                field.span(),
+                "transparent is only supported on containers",
+            ));
+        }
         let mut kind = classify_type(&field.ty)?;
         let mut oneof_type = None;
         let option_inner = extract_generic(&field.ty, "Option", 0).cloned();
@@ -1148,8 +1553,29 @@ impl FieldInfo {
             }
         }
 
-        let proto_name = proto_name_attr.unwrap_or_else(|| ident.to_string());
-        let json_name = json_name_attr.unwrap_or_else(|| to_json_name(&proto_name));
+        if attrs.flatten {
+            if is_oneof {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "flatten is not supported on oneof fields",
+                ));
+            }
+            if attrs.proto_name.is_some() || attrs.json_name.is_some() {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "flatten fields cannot set proto_name or json_name",
+                ));
+            }
+            if !is_message_like(&kind) {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "flatten is only supported on message fields",
+                ));
+            }
+        }
+
+        let proto_name = attrs.proto_name.unwrap_or_else(|| ident.to_string());
+        let json_name = attrs.json_name.unwrap_or_else(|| to_json_name(&proto_name));
 
         Ok(Self {
             ident,
@@ -1157,6 +1583,7 @@ impl FieldInfo {
             kind,
             enum_path,
             is_oneof,
+            is_flatten: attrs.flatten,
             json_name,
             proto_name,
             oneof_type,
@@ -1164,11 +1591,29 @@ impl FieldInfo {
             vec_inner,
         })
     }
+
+    fn flatten_target_ty(&self) -> &Type {
+        if self.is_option_message() {
+            self.option_inner
+                .as_ref()
+                .expect("flatten option fields must have an inner type")
+        } else {
+            &self.ty
+        }
+    }
+
+    fn is_option_message(&self) -> bool {
+        matches!(&self.kind, Kind::Option(inner) if matches!(inner.as_ref(), Kind::Message))
+    }
+
+    fn flatten_buffer_ident(&self) -> syn::Result<Ident> {
+        let ident = format!("__pcs_flatten_{}", self.ident);
+        Ok(Ident::new(&ident, self.ident.span()))
+    }
 }
 
-fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<(Option<String>, Option<String>)> {
-    let mut proto_name = None;
-    let mut json_name = None;
+fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<CanonicalAttrs> {
+    let mut parsed = CanonicalAttrs::default();
 
     for attr in attrs {
         if !attr.path().is_ident("prost_canonical_serde") {
@@ -1178,16 +1623,36 @@ fn parse_canonical_attrs(attrs: &[Attribute]) -> syn::Result<(Option<String>, Op
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                proto_name = Some(value.value());
+                parsed.proto_name = Some(value.value());
             } else if meta.path.is_ident("json_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                json_name = Some(value.value());
+                parsed.json_name = Some(value.value());
+            } else if meta.path.is_ident("transparent") {
+                parsed.transparent = true;
+            } else if meta.path.is_ident("flatten") {
+                parsed.flatten = true;
             }
             Ok(())
         })?;
     }
 
-    Ok((proto_name, json_name))
+    Ok(parsed)
+}
+
+#[derive(Default)]
+struct CanonicalAttrs {
+    proto_name: Option<String>,
+    json_name: Option<String>,
+    transparent: bool,
+    flatten: bool,
+}
+
+fn is_message_like(kind: &Kind) -> bool {
+    match kind {
+        Kind::Message => true,
+        Kind::Option(inner) => matches!(inner.as_ref(), Kind::Message),
+        _ => false,
+    }
 }
 
 #[derive(Clone)]
