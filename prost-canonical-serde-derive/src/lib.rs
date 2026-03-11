@@ -2023,7 +2023,8 @@ fn path_ends_with(ty: &Type, idents: &[&str]) -> bool {
 
 fn name_for_field(
     ident: &Ident,
-    attrs: &CanonicalAttrs,
+    json_name: Option<&String>,
+    has_proto_name: bool,
     rename_rule: Option<RenameRule>,
     proto_name: &str,
     explicit_name: Option<&String>,
@@ -2031,10 +2032,10 @@ fn name_for_field(
     if let Some(name) = explicit_name {
         return name.clone();
     }
-    if let Some(json_name) = &attrs.json_name {
+    if let Some(json_name) = json_name {
         return json_name.clone();
     }
-    if attrs.proto_name.is_some() {
+    if has_proto_name {
         return RenameRule::CamelCase.apply_to_field(proto_name);
     }
     rename_rule
@@ -2217,7 +2218,7 @@ impl FieldInfo {
             .ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
         let (is_oneof, enum_path) = parse_prost_attrs(&field.attrs)?;
         let attrs = parse_field_attrs(&field.attrs)?;
-        if attrs.canonical.transparent {
+        if attrs.transparent {
             return Err(syn::Error::new(
                 field.span(),
                 "transparent is only supported on containers",
@@ -2239,7 +2240,7 @@ impl FieldInfo {
             }
         }
 
-        if attrs.canonical.flatten {
+        if attrs.flatten {
             if is_oneof {
                 return Err(syn::Error::new(
                     field.span(),
@@ -2249,8 +2250,8 @@ impl FieldInfo {
             if attrs.serialize_name.is_some()
                 || attrs.deserialize_name.is_some()
                 || !attrs.aliases.is_empty()
-                || attrs.canonical.proto_name.is_some()
-                || attrs.canonical.json_name.is_some()
+                || attrs.proto_name.is_some()
+                || attrs.json_name.is_some()
             {
                 return Err(syn::Error::new(
                     field.span(),
@@ -2265,21 +2266,19 @@ impl FieldInfo {
             }
         }
 
-        let proto_name = attrs
-            .canonical
-            .proto_name
-            .clone()
-            .unwrap_or_else(|| ident.to_string());
+        let proto_name = attrs.proto_name.clone().unwrap_or_else(|| ident.to_string());
         let serialize_name = name_for_field(
             &ident,
-            &attrs.canonical,
+            attrs.json_name.as_ref(),
+            attrs.proto_name.is_some(),
             container_attrs.serialize_rename_all,
             &proto_name,
             attrs.serialize_name.as_ref(),
         );
         let deserialize_name = name_for_field(
             &ident,
-            &attrs.canonical,
+            attrs.json_name.as_ref(),
+            attrs.proto_name.is_some(),
             container_attrs.deserialize_rename_all,
             &proto_name,
             attrs.deserialize_name.as_ref(),
@@ -2291,7 +2290,7 @@ impl FieldInfo {
             kind,
             enum_path,
             is_oneof,
-            is_flatten: attrs.canonical.flatten,
+            is_flatten: attrs.flatten,
             serialize_name,
             deserialize_name,
             aliases: attrs.aliases,
@@ -2325,7 +2324,10 @@ impl FieldInfo {
 
 fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut field = FieldAttrs {
-        canonical: CanonicalAttrs::default(),
+        proto_name: None,
+        json_name: None,
+        transparent: false,
+        flatten: false,
         serialize_name: None,
         deserialize_name: None,
         aliases: Vec::new(),
@@ -2369,14 +2371,14 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 }
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                field.canonical.proto_name = Some(value.value());
+                field.proto_name = Some(value.value());
             } else if meta.path.is_ident("json_name") {
                 let value: LitStr = meta.value()?.parse()?;
-                field.canonical.json_name = Some(value.value());
+                field.json_name = Some(value.value());
             } else if meta.path.is_ident("transparent") {
-                field.canonical.transparent = true;
+                field.transparent = true;
             } else if meta.path.is_ident("flatten") {
-                field.canonical.flatten = true;
+                field.flatten = true;
             }
             Ok(())
         })?;
@@ -2621,7 +2623,10 @@ struct VariantAttrs {
 }
 
 struct FieldAttrs {
-    canonical: CanonicalAttrs,
+    proto_name: Option<String>,
+    json_name: Option<String>,
+    transparent: bool,
+    flatten: bool,
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
     aliases: Vec<String>,
