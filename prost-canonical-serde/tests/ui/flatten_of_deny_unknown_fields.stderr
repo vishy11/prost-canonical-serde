@@ -1,0 +1,5 @@
+error[E0080]: evaluation of constant value failed
+  --> tests/ui/flatten_of_deny_unknown_fields.rs:12:30
+   |
+12 | #[derive(CanonicalSerialize, CanonicalDeserialize)]
+   |                              ^^^^^^^^^^^^^^^^^^^^ evaluation panicked: deny_unknown_fields is not supported with flatten

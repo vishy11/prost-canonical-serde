@@ -19,6 +19,13 @@ struct RenamedMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictMessage {
+    #[prost(string, tag = "1")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(rename(serialize = "wire_box_ser", deserialize = "wire_box_de"))]
 #[prost_canonical_serde(transparent)]
 struct RenamedTransparent {
@@ -33,6 +40,13 @@ enum RenamedChoice {
     #[prost(string, tag = "1")]
     #[prost_canonical_serde(proto_name = "value_choice", json_name = "valueChoice")]
     ValueChoice(String),
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(deny_unknown_fields)]
+enum StrictChoice {
+    #[prost(string, tag = "1")]
+    Value(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,6 +477,43 @@ fn container_rename_applies_to_oneof_enums() {
             .expect("deserialize renamed oneof");
     assert_eq!(seen.into_inner(), Some("wire_choice_de".to_string()));
     assert_eq!(roundtrip, RenamedChoice::ValueChoice("demo".to_string()));
+}
+
+#[test]
+fn deny_unknown_fields_rejects_unknown_struct_keys() {
+    let err = serde_json::from_value::<StrictMessage>(json!({
+        "note": "demo",
+        "extra": "nope"
+    }))
+    .expect_err("unknown fields should be rejected");
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn deny_unknown_fields_rejects_unknown_oneof_keys() {
+    let err = serde_json::from_value::<StrictChoice>(json!({
+        "extra": "nope"
+    }))
+    .expect_err("unknown oneof fields should be rejected");
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn unknown_fields_are_ignored_without_deny_unknown_fields() {
+    let value: RenamedMessage = serde_json::from_value(json!({
+        "value": "demo",
+        "extra": "ignored"
+    }))
+    .expect("unknown fields should be ignored by default");
+
+    assert_eq!(
+        value,
+        RenamedMessage {
+            value: "demo".to_string(),
+        }
+    );
 }
 
 macro_rules! rename_all_case_tests {

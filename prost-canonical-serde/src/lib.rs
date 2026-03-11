@@ -111,6 +111,8 @@ pub trait ProstOneof: Sized {
 /// Internal helper trait implemented by prost-generated messages.
 #[doc(hidden)]
 pub trait ProstMessage: Sized {
+    const DENY_UNKNOWN_FIELDS: bool;
+
     fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
     where
         S: SerializeObject;

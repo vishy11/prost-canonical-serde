@@ -76,6 +76,7 @@ fn expand_serialize_struct(
     let fields = extract_fields(&data.fields, &container_attrs)?;
     let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
+    let deny_unknown_fields = container_attrs.deny_unknown_fields;
 
     if container_attrs.transparent {
         return expand_serialize_transparent_struct(name, &serialize_name, &fields);
@@ -93,6 +94,8 @@ fn expand_serialize_struct(
 
     Ok(quote! {
         impl ::prost_canonical_serde::ProstMessage for #name {
+            const DENY_UNKNOWN_FIELDS: bool = #deny_unknown_fields;
+
             fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
             where
                 S: ::prost_canonical_serde::SerializeObject,
@@ -160,9 +163,17 @@ fn expand_deserialize_struct(
     let fields = extract_fields(&data.fields, &container_attrs)?;
     let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
+    let deny_unknown_fields = container_attrs.deny_unknown_fields;
 
     if container_attrs.transparent {
         return expand_deserialize_transparent_struct(name, &deserialize_name, &fields);
+    }
+
+    if deny_unknown_fields && has_flatten {
+        return Err(syn::Error::new(
+            input.span(),
+            "deny_unknown_fields is not supported with flatten",
+        ));
     }
 
     let mut field_inits = Vec::new();
@@ -171,6 +182,7 @@ fn expand_deserialize_struct(
     let mut oneof_checks = Vec::new();
     let mut flatten_checks = Vec::new();
     let mut flatten_finishes = Vec::new();
+    let mut flatten_deny_guards = Vec::new();
 
     for field in &fields {
         let ident = field.ident.clone();
@@ -181,6 +193,7 @@ fn expand_deserialize_struct(
             field_inits.push(init_flatten_buffer(field)?);
             flatten_checks.push(flatten_match_arm(field, &key_str_ident, &map_ident)?);
             flatten_finishes.push(finish_flatten_field(field)?);
+            flatten_deny_guards.push(flatten_deny_unknown_guard(field)?);
             continue;
         }
 
@@ -213,6 +226,8 @@ fn expand_deserialize_struct(
     }
 
     Ok(quote! {
+        #(#flatten_deny_guards)*
+
         impl ::prost_canonical_serde::CanonicalDeserialize for #name {
             fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
             where
@@ -240,6 +255,9 @@ fn expand_deserialize_struct(
                                 #(#match_arms)*
                                 _ => {
                                     #(#flatten_checks)*
+                                    if #deny_unknown_fields {
+                                        return Err(::serde::de::Error::unknown_field(#key_str_ident, &[]));
+                                    }
                                     let _ = #map_ident.next_value::<::serde::de::IgnoredAny>()?;
                                 }
                             }
@@ -475,6 +493,7 @@ fn expand_deserialize_enum(
     if is_oneof_enum(data) {
         let container_attrs = parse_container_attrs(input)?;
         let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
+        let deny_unknown_fields = container_attrs.deny_unknown_fields;
         let map_ident = Ident::new("__pcs_map", Span::call_site());
         let key_cow_ident = Ident::new("__pcs_key", Span::call_site());
         let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
@@ -519,6 +538,9 @@ fn expand_deserialize_enum(
                                         continue;
                                     }
                                     ::prost_canonical_serde::OneofMatch::NoMatch => {
+                                        if #deny_unknown_fields {
+                                            return Err(::serde::de::Error::unknown_field(#key_str_ident, &[]));
+                                        }
                                         let _ = #map_ident.next_value::<::serde::de::IgnoredAny>()?;
                                     }
                                 }
@@ -925,6 +947,17 @@ fn finish_flatten_field(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStre
                 .0;
         })
     }
+}
+
+fn flatten_deny_unknown_guard(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
+    let target_ty = field.flatten_target_ty();
+    Ok(quote! {
+        const _: () = {
+            if <#target_ty as ::prost_canonical_serde::ProstMessage>::DENY_UNKNOWN_FIELDS {
+                panic!("deny_unknown_fields is not supported with flatten");
+            }
+        };
+    })
 }
 
 fn deserialize_match_arm(
@@ -1887,6 +1920,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         deserialize_name: default_name,
         serialize_rename_all: None,
         deserialize_rename_all: None,
+        deny_unknown_fields: false,
     };
 
     for attr in &input.attrs {
@@ -1936,6 +1970,8 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                     meta.path.span(),
                     "rename_all_fields is only supported for enums with struct variants, which prost-canonical-serde does not support",
                 ));
+            } else if meta.path.is_ident("deny_unknown_fields") {
+                container.deny_unknown_fields = true;
             }
             Ok(())
         })?;
@@ -1958,6 +1994,7 @@ struct ContainerAttrs {
     deserialize_name: String,
     serialize_rename_all: Option<RenameRule>,
     deserialize_rename_all: Option<RenameRule>,
+    deny_unknown_fields: bool,
 }
 
 fn is_message_like(kind: &Kind) -> bool {
