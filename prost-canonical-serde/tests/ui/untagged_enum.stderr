@@ -1,0 +1,5 @@
+error: untagged enums are not supported in prost-canonical-serde
+ --> tests/ui/untagged_enum.rs:6:9
+  |
+6 | #[serde(untagged)]
+  |         ^^^^^^^^

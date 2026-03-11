@@ -2067,6 +2067,16 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
             } else if meta.path.is_ident("tag") {
                 let value: LitStr = meta.value()?.parse()?;
                 container.tag = Some(value.value());
+            } else if meta.path.is_ident("content") {
+                return Err(syn::Error::new(
+                    meta.path.span(),
+                    "adjacently tagged enums are not supported in prost-canonical-serde",
+                ));
+            } else if meta.path.is_ident("untagged") {
+                return Err(syn::Error::new(
+                    meta.path.span(),
+                    "untagged enums are not supported in prost-canonical-serde",
+                ));
             }
             Ok(())
         })?;

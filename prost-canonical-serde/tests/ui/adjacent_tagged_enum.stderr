@@ -1,0 +1,5 @@
+error: adjacently tagged enums are not supported in prost-canonical-serde
+ --> tests/ui/adjacent_tagged_enum.rs:6:20
+  |
+6 | #[serde(tag = "t", content = "c")]
+  |                    ^^^^^^^
