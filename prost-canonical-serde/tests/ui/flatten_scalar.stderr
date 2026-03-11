@@ -1,0 +1,5 @@
+error: flatten is only supported on message fields
+ --> tests/ui/flatten_scalar.rs:7:5
+  |
+7 |     #[prost(int32, tag = "1")]
+  |     ^

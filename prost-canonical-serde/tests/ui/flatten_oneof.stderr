@@ -1,0 +1,5 @@
+error: flatten is not supported on oneof fields
+ --> tests/ui/flatten_oneof.rs:7:5
+  |
+7 |     #[prost(oneof = "invalid_flatten_oneof::Choice", tags = "1")]
+  |     ^

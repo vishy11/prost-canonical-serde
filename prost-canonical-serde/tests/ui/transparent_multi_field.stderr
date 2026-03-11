@@ -1,0 +1,5 @@
+error: transparent structs must have exactly one field
+ --> tests/ui/transparent_multi_field.rs:7:8
+  |
+7 | struct Transparent {
+  |        ^^^^^^^^^^^

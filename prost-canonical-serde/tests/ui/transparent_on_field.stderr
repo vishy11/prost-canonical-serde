@@ -1,0 +1,5 @@
+error: transparent is only supported on containers
+ --> tests/ui/transparent_on_field.rs:7:5
+  |
+7 |     #[prost(int32, tag = "1")]
+  |     ^

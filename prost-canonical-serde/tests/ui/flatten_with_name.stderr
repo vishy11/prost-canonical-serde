@@ -1,0 +1,5 @@
+error: flatten fields cannot set proto_name or json_name
+  --> tests/ui/flatten_with_name.rs:14:5
+   |
+14 |     #[prost(message, optional, tag = "1")]
+   |     ^
