@@ -1345,11 +1345,16 @@ fn deserialize_match_arm(
     let value_ident = Ident::new("__pcs_value", Span::call_site());
     let deserialize_name = LitStr::new(&field.deserialize_name, ident.span());
     let proto_name = LitStr::new(&field.proto_name, ident.span());
+    let alias_literals: Vec<_> = field
+        .aliases
+        .iter()
+        .map(|alias| LitStr::new(alias, ident.span()))
+        .collect();
     let ty = &field.ty;
     let match_pat = if field.deserialize_name == field.proto_name {
-        quote! { #deserialize_name }
+        quote! { #deserialize_name #( | #alias_literals )* }
     } else {
-        quote! { #deserialize_name | #proto_name }
+        quote! { #deserialize_name | #proto_name #( | #alias_literals )* }
     };
 
     match &field.kind {
@@ -1581,13 +1586,18 @@ fn field_match_arm(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
     let ident = &field.ident;
     let deserialize_name = LitStr::new(&field.deserialize_name, ident.span());
     let proto_name = LitStr::new(&field.proto_name, ident.span());
+    let alias_literals: Vec<_> = field
+        .aliases
+        .iter()
+        .map(|alias| LitStr::new(alias, ident.span()))
+        .collect();
     if field.deserialize_name == field.proto_name {
         Ok(quote! {
-            #deserialize_name => true,
+            #deserialize_name #( | #alias_literals )* => true,
         })
     } else {
         Ok(quote! {
-            #deserialize_name | #proto_name => true,
+            #deserialize_name | #proto_name #( | #alias_literals )* => true,
         })
     }
 }
@@ -2177,6 +2187,7 @@ struct FieldInfo {
     is_flatten: bool,
     serialize_name: String,
     deserialize_name: String,
+    aliases: Vec<String>,
     proto_name: String,
     oneof_type: Option<Type>,
     option_inner: Option<Type>,
@@ -2222,12 +2233,13 @@ impl FieldInfo {
             }
             if attrs.serialize_name.is_some()
                 || attrs.deserialize_name.is_some()
+                || !attrs.aliases.is_empty()
                 || attrs.canonical.proto_name.is_some()
                 || attrs.canonical.json_name.is_some()
             {
                 return Err(syn::Error::new(
                     field.span(),
-                    "flatten fields cannot set rename, proto_name, or json_name",
+                    "flatten fields cannot set rename, alias, proto_name, or json_name",
                 ));
             }
             if !is_message_like(&kind) {
@@ -2267,6 +2279,7 @@ impl FieldInfo {
             is_flatten: attrs.canonical.flatten,
             serialize_name,
             deserialize_name,
+            aliases: attrs.aliases,
             proto_name,
             oneof_type,
             option_inner,
@@ -2299,6 +2312,7 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         canonical: CanonicalAttrs::default(),
         serialize_name: None,
         deserialize_name: None,
+        aliases: Vec::new(),
     };
 
     for attr in attrs {
@@ -2325,6 +2339,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                         Ok(())
                     })?;
                 }
+            } else if meta.path.is_ident("alias") {
+                let value: LitStr = meta.value()?.parse()?;
+                field.aliases.push(value.value());
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 field.canonical.proto_name = Some(value.value());
@@ -2582,6 +2599,7 @@ struct FieldAttrs {
     canonical: CanonicalAttrs,
     serialize_name: Option<String>,
     deserialize_name: Option<String>,
+    aliases: Vec<String>,
 }
 
 struct ContainerAttrs {
