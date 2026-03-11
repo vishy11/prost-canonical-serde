@@ -1,5 +1,0 @@
-error: tag is only supported on structs with named fields
- --> tests/ui/tag_on_transparent_struct.rs:6:1
-  |
-6 | #[serde(tag = "type")]
-  | ^

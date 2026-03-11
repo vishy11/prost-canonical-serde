@@ -1,5 +1,0 @@
-error: unsupported serde container attribute `content`
- --> tests/ui/adjacent_tagged_enum.rs:6:20
-  |
-6 | #[serde(tag = "t", content = "c")]
-  |                    ^^^^^^^

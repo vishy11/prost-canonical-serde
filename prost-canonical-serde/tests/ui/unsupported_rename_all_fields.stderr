@@ -1,5 +1,0 @@
-error: unsupported serde container attribute `rename_all_fields`
- --> tests/ui/unsupported_rename_all_fields.rs:4:9
-  |
-4 | #[serde(rename_all_fields = "snake_case")]
-  |         ^^^^^^^^^^^^^^^^^

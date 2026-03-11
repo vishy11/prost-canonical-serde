@@ -1,5 +1,0 @@
-error: unsupported serde container attribute `untagged`
- --> tests/ui/untagged_enum.rs:6:9
-  |
-6 | #[serde(untagged)]
-  |         ^^^^^^^^

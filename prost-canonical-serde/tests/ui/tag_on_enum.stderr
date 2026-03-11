@@ -1,5 +1,0 @@
-error: tag is not supported on enums in prost-canonical-serde
- --> tests/ui/tag_on_enum.rs:6:1
-  |
-6 | #[serde(tag = "type")]
-  | ^

@@ -1,5 +1,0 @@
-error: default is only supported on structs in prost-canonical-serde
- --> tests/ui/default_on_enum.rs:6:1
-  |
-6 | #[serde(default)]
-  | ^
