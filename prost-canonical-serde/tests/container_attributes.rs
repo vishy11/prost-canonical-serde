@@ -26,6 +26,16 @@ struct StrictMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[serde(
+    rename(serialize = "wire_tag_ser", deserialize = "wire_tag_de"),
+    tag = "type"
+)]
+struct TaggedMessage {
+    #[prost(int64, tag = "1")]
+    count: i64,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[serde(rename(serialize = "wire_box_ser", deserialize = "wire_box_de"))]
 #[prost_canonical_serde(transparent)]
 struct RenamedTransparent {
@@ -514,6 +524,44 @@ fn unknown_fields_are_ignored_without_deny_unknown_fields() {
             value: "demo".to_string(),
         }
     );
+}
+
+#[test]
+fn tagged_struct_serializes_tag_first_with_renamed_value() {
+    let json = serde_json::to_string(&TaggedMessage { count: 7 }).expect("serialize tagged struct");
+    assert_eq!(json, r#"{"type":"wire_tag_ser","count":"7"}"#);
+}
+
+#[test]
+fn tagged_struct_requires_matching_tag_on_deserialize() {
+    let value: TaggedMessage = serde_json::from_value(json!({
+        "type": "wire_tag_de",
+        "count": "7"
+    }))
+    .expect("deserialize tagged struct");
+
+    assert_eq!(value, TaggedMessage { count: 7 });
+}
+
+#[test]
+fn tagged_struct_rejects_missing_tag_on_deserialize() {
+    let err = serde_json::from_value::<TaggedMessage>(json!({
+        "count": "7"
+    }))
+    .expect_err("missing tag should be rejected");
+
+    assert!(err.to_string().contains("missing field"));
+}
+
+#[test]
+fn tagged_struct_rejects_wrong_tag_on_deserialize() {
+    let err = serde_json::from_value::<TaggedMessage>(json!({
+        "type": "wire_tag_ser",
+        "count": "7"
+    }))
+    .expect_err("wrong tag should be rejected");
+
+    assert!(err.to_string().contains("invalid struct tag"));
 }
 
 macro_rules! rename_all_case_tests {

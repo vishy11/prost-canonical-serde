@@ -77,8 +77,18 @@ fn expand_serialize_struct(
     let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
     let deny_unknown_fields = container_attrs.deny_unknown_fields;
+    let tag_key = container_attrs
+        .tag
+        .as_ref()
+        .map(|tag| LitStr::new(tag, name.span()));
 
     if container_attrs.transparent {
+        if container_attrs.tag.is_some() {
+            return Err(syn::Error::new(
+                input.span(),
+                "tag is only supported on structs with named fields",
+            ));
+        }
         return expand_serialize_transparent_struct(name, &serialize_name, &fields);
     }
 
@@ -91,6 +101,27 @@ fn expand_serialize_struct(
         field_match_arms.push(field_match_arm(field)?);
         field_count_stmts.push(serialized_field_count_stmt(field));
     }
+    let tag_serializer = if let Some(tag_key) = &tag_key {
+        quote! {
+            map.serialize_entry(#tag_key, #serialize_name)?;
+        }
+    } else {
+        quote! {}
+    };
+    let tag_match_arm = if let Some(tag_key) = &tag_key {
+        quote! {
+            #tag_key => true,
+        }
+    } else {
+        quote! {}
+    };
+    let tag_count_stmt = if tag_key.is_some() {
+        quote! {
+            __pcs_len += 1;
+        }
+    } else {
+        quote! {}
+    };
 
     Ok(quote! {
         impl ::prost_canonical_serde::ProstMessage for #name {
@@ -100,12 +131,14 @@ fn expand_serialize_struct(
             where
                 S: ::prost_canonical_serde::SerializeObject,
             {
+                #tag_serializer
                 #(#field_serializers)*
                 Ok(())
             }
 
             fn matches_field_name(key: &str) -> bool {
                 match key {
+                    #tag_match_arm
                     #(#field_match_arms)*
                     _ => false,
                 }
@@ -126,6 +159,7 @@ fn expand_serialize_struct(
                 } else {
                     use ::serde::ser::SerializeStruct;
                     let mut __pcs_len = 0usize;
+                    #tag_count_stmt
                     #(#field_count_stmts)*
                     let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
                         serializer.serialize_struct(#serialize_name, __pcs_len)?,
@@ -164,8 +198,18 @@ fn expand_deserialize_struct(
     let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
     let has_flatten = fields.iter().any(|field| field.is_flatten);
     let deny_unknown_fields = container_attrs.deny_unknown_fields;
+    let tag_key = container_attrs
+        .tag
+        .as_ref()
+        .map(|tag| LitStr::new(tag, name.span()));
 
     if container_attrs.transparent {
+        if container_attrs.tag.is_some() {
+            return Err(syn::Error::new(
+                input.span(),
+                "tag is only supported on structs with named fields",
+            ));
+        }
         return expand_deserialize_transparent_struct(name, &deserialize_name, &fields);
     }
 
@@ -183,6 +227,8 @@ fn expand_deserialize_struct(
     let mut flatten_checks = Vec::new();
     let mut flatten_finishes = Vec::new();
     let mut flatten_deny_guards = Vec::new();
+    let tag_seen_ident = Ident::new("__pcs_tag_seen", Span::call_site());
+    let tag_value_ident = Ident::new("__pcs_tag_value", Span::call_site());
 
     for field in &fields {
         let ident = field.ident.clone();
@@ -224,6 +270,36 @@ fn expand_deserialize_struct(
             match_arms.push(deserialize_match_arm(field, &map_ident)?);
         }
     }
+    let tag_init = if tag_key.is_some() {
+        quote! {
+            let mut #tag_seen_ident = false;
+        }
+    } else {
+        quote! {}
+    };
+    let tag_check = if let Some(tag_key) = &tag_key {
+        quote! {
+            if #key_str_ident == #tag_key {
+                let #tag_value_ident = #map_ident.next_value::<::alloc::borrow::Cow<'de, str>>()?;
+                if #tag_value_ident.as_ref() != #deserialize_name {
+                    return Err(::serde::de::Error::custom("invalid struct tag"));
+                }
+                #tag_seen_ident = true;
+                continue;
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let tag_finish = if tag_key.is_some() {
+        quote! {
+            if !#tag_seen_ident {
+                return Err(::serde::de::Error::missing_field(#tag_key));
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     Ok(quote! {
         #(#flatten_deny_guards)*
@@ -246,10 +322,12 @@ fn expand_deserialize_struct(
                     where
                         A: ::serde::de::MapAccess<'de>,
                     {
+                        #tag_init
                         #(#field_inits)*
 
                         while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
                             let #key_str_ident = #key_cow_ident.as_ref();
+                            #tag_check
                             #(#oneof_checks)*
                             match #key_str_ident {
                                 #(#match_arms)*
@@ -263,6 +341,7 @@ fn expand_deserialize_struct(
                             }
                         }
 
+                        #tag_finish
                         #(#flatten_finishes)*
 
                         Ok(#name {
@@ -409,8 +488,14 @@ fn expand_serialize_enum(
     data: &syn::DataEnum,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
+    let container_attrs = parse_container_attrs(input)?;
+    if container_attrs.tag.is_some() {
+        return Err(syn::Error::new(
+            input.span(),
+            "tag is not supported on enums in prost-canonical-serde",
+        ));
+    }
     if is_oneof_enum(data) {
-        let container_attrs = parse_container_attrs(input)?;
         let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
         let oneof_impl = expand_oneof_impl(input, data, &container_attrs)?;
         return Ok(quote! {
@@ -490,8 +575,14 @@ fn expand_deserialize_enum(
     data: &syn::DataEnum,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
+    let container_attrs = parse_container_attrs(input)?;
+    if container_attrs.tag.is_some() {
+        return Err(syn::Error::new(
+            input.span(),
+            "tag is not supported on enums in prost-canonical-serde",
+        ));
+    }
     if is_oneof_enum(data) {
-        let container_attrs = parse_container_attrs(input)?;
         let deserialize_name = LitStr::new(&container_attrs.deserialize_name, name.span());
         let deny_unknown_fields = container_attrs.deny_unknown_fields;
         let map_ident = Ident::new("__pcs_map", Span::call_site());
@@ -1921,6 +2012,7 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
         serialize_rename_all: None,
         deserialize_rename_all: None,
         deny_unknown_fields: false,
+        tag: None,
     };
 
     for attr in &input.attrs {
@@ -1972,6 +2064,9 @@ fn parse_container_attrs(input: &DeriveInput) -> syn::Result<ContainerAttrs> {
                 ));
             } else if meta.path.is_ident("deny_unknown_fields") {
                 container.deny_unknown_fields = true;
+            } else if meta.path.is_ident("tag") {
+                let value: LitStr = meta.value()?.parse()?;
+                container.tag = Some(value.value());
             }
             Ok(())
         })?;
@@ -1995,6 +2090,7 @@ struct ContainerAttrs {
     serialize_rename_all: Option<RenameRule>,
     deserialize_rename_all: Option<RenameRule>,
     deny_unknown_fields: bool,
+    tag: Option<String>,
 }
 
 fn is_message_like(kind: &Kind) -> bool {
