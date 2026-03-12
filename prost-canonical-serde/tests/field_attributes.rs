@@ -127,6 +127,20 @@ fn container_skip_default_message() -> SkipDeserializingIgnoresContainerDefaultM
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct SkipSerializingIfFieldMessage {
+    #[prost(string, tag = "1")]
+    #[prost_canonical_serde(skip_serializing_if = "is_internal_note")]
+    note: String,
+
+    #[prost(int64, tag = "2")]
+    count: i64,
+}
+
+fn is_internal_note(value: &String) -> bool {
+    value == "internal"
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 struct FlattenedInner {
     #[prost(int64, tag = "1")]
     #[prost_canonical_serde(proto_name = "count", json_name = "count")]
@@ -503,6 +517,43 @@ fn field_skip_deserializing_uses_type_default_instead_of_container_default() {
         SkipDeserializingIgnoresContainerDefaultMessage {
             count: 0,
             note: "fallback".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_skip_serializing_if_omits_matching_field() {
+    let value = SkipSerializingIfFieldMessage {
+        note: "internal".to_string(),
+        count: 7,
+    };
+
+    assert_eq!(
+        serde_json::to_value(&value).expect("serialize skip_serializing_if field"),
+        json!({ "count": "7" })
+    );
+}
+
+#[test]
+fn field_skip_serializing_if_keeps_non_matching_field_and_does_not_affect_deserialize() {
+    let value = SkipSerializingIfFieldMessage {
+        note: "public".to_string(),
+        count: 7,
+    };
+
+    assert_eq!(
+        serde_json::to_value(&value).expect("serialize non-matching skip_serializing_if field"),
+        json!({ "note": "public", "count": "7" })
+    );
+
+    let roundtrip: SkipSerializingIfFieldMessage =
+        serde_json::from_value(json!({ "note": "internal", "count": "7" }))
+            .expect("deserialize skip_serializing_if field");
+    assert_eq!(
+        roundtrip,
+        SkipSerializingIfFieldMessage {
+            note: "internal".to_string(),
+            count: 7,
         }
     );
 }
