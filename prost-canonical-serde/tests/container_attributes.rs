@@ -189,6 +189,14 @@ struct RenamedTransparent {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[prost_canonical_serde(transparent)]
+struct TransparentCount {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(proto_name = "count", json_name = "count")]
+    count: i64,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 #[prost_canonical_serde(rename(serialize = "wire_choice_ser", deserialize = "wire_choice_de"))]
 enum RenamedChoice {
     #[prost(string, tag = "1")]
@@ -642,6 +650,17 @@ fn container_rename_supports_independent_newtype_names() {
             value: "demo".to_string(),
         }
     );
+}
+
+#[test]
+fn transparent_uses_inner_canonical_representation() {
+    let value = TransparentCount { count: 42 };
+    let json = serde_json::to_value(&value).expect("serialize transparent");
+    assert_eq!(json, json!("42"));
+
+    let roundtrip: TransparentCount =
+        serde_json::from_value(json!("42")).expect("deserialize transparent");
+    assert_eq!(roundtrip, value);
 }
 
 #[test]
