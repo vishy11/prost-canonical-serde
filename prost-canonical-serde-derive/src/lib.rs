@@ -114,7 +114,9 @@ fn expand_serialize_struct(
 
     for field in &fields {
         field_serializers.push(serialize_field(field));
-        field_match_arms.push(field_match_arm(field)?);
+        if !field.skip_deserializing {
+            field_match_arms.push(field_match_arm(field)?);
+        }
         field_count_stmts.push(serialized_field_count_stmt(field));
     }
     let tag_serializer = if let Some(tag_key) = &tag_key {
@@ -139,65 +141,68 @@ fn expand_serialize_struct(
         quote! {}
     };
 
-    Ok(wrap_with_serde_path(quote! {
-        impl ::prost_canonical_serde::ProstMessage for #name {
-            const DENY_UNKNOWN_FIELDS: bool = #deny_unknown_fields;
+    Ok(wrap_with_serde_path(
+        quote! {
+            impl ::prost_canonical_serde::ProstMessage for #name {
+                const DENY_UNKNOWN_FIELDS: bool = #deny_unknown_fields;
 
-            fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
-            where
-                S: ::prost_canonical_serde::SerializeObject,
-            {
-                #tag_serializer
-                #(#field_serializers)*
-                Ok(())
-            }
+                fn serialize_fields<S>(&self, map: &mut S) -> Result<(), S::Error>
+                where
+                    S: ::prost_canonical_serde::SerializeObject,
+                {
+                    #tag_serializer
+                    #(#field_serializers)*
+                    Ok(())
+                }
 
-            fn matches_field_name(key: &str) -> bool {
-                match key {
-                    #tag_match_arm
-                    #(#field_match_arms)*
-                    _ => false,
+                fn matches_field_name(key: &str) -> bool {
+                    match key {
+                        #tag_match_arm
+                        #(#field_match_arms)*
+                        _ => false,
+                    }
                 }
             }
-        }
 
-        impl ::prost_canonical_serde::CanonicalSerialize for #name {
-            fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: __pcs_serde::Serializer,
-            {
-                if #has_flatten {
-                    use __pcs_serde::ser::SerializeMap;
-                    let mut map =
-                        ::prost_canonical_serde::MapObjectSerializer::new(serializer.serialize_map(None)?);
-                    <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
-                    map.end()
-                } else {
-                    use __pcs_serde::ser::SerializeStruct;
-                    let mut __pcs_len = 0usize;
-                    #tag_count_stmt
-                    #(#field_count_stmts)*
-                    let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
-                        serializer.serialize_struct(#serialize_name, __pcs_len)?,
-                    );
-                    <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
-                    map.end()
+            impl ::prost_canonical_serde::CanonicalSerialize for #name {
+                fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: __pcs_serde::Serializer,
+                {
+                    if #has_flatten {
+                        use __pcs_serde::ser::SerializeMap;
+                        let mut map =
+                            ::prost_canonical_serde::MapObjectSerializer::new(serializer.serialize_map(None)?);
+                        <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
+                        map.end()
+                    } else {
+                        use __pcs_serde::ser::SerializeStruct;
+                        let mut __pcs_len = 0usize;
+                        #tag_count_stmt
+                        #(#field_count_stmts)*
+                        let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
+                            serializer.serialize_struct(#serialize_name, __pcs_len)?,
+                        );
+                        <Self as ::prost_canonical_serde::ProstMessage>::serialize_fields(self, &mut map)?;
+                        map.end()
+                    }
                 }
             }
-        }
 
-        impl __pcs_serde::Serialize for #name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: __pcs_serde::Serializer,
-            {
-                <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
-                    self,
-                    serializer,
-                )
+            impl __pcs_serde::Serialize for #name {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: __pcs_serde::Serializer,
+                {
+                    <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
+                        self,
+                        serializer,
+                    )
+                }
             }
-        }
-    }, &container_attrs.serde_path))
+        },
+        &container_attrs.serde_path,
+    ))
 }
 
 fn expand_serialize_conversion(
@@ -268,12 +273,7 @@ fn expand_deserialize_struct(
                 "tag is only supported on structs with named fields",
             ));
         }
-        return expand_deserialize_transparent_struct(
-            name,
-            &deserialize_name,
-            &expecting,
-            &fields,
-        )
+        return expand_deserialize_transparent_struct(name, &deserialize_name, &expecting, &fields)
             .map(|tokens| wrap_with_serde_path(tokens, &container_attrs.serde_path));
     }
 
@@ -304,6 +304,9 @@ fn expand_deserialize_struct(
         ));
 
         if field.is_flatten {
+            if field.skip_deserializing {
+                continue;
+            }
             field_inits.push(init_flatten_buffer(field)?);
             flatten_checks.push(flatten_match_arm(field, &key_str_ident, &map_ident)?);
             flatten_finishes.push(finish_flatten_field(field)?);
@@ -312,30 +315,34 @@ fn expand_deserialize_struct(
         }
 
         if field.is_oneof {
-            let oneof_type = field
-                .oneof_type
-                .as_ref()
-                .ok_or_else(|| syn::Error::new(ident.span(), "oneof field must be Option"))?;
-            oneof_checks.push(quote! {
-                match <#oneof_type as ::prost_canonical_serde::ProstOneof>::try_deserialize(
-                    #key_str_ident,
-                    &mut #map_ident,
-                )? {
-                    ::prost_canonical_serde::OneofMatch::Matched(Some(#oneof_value_ident)) => {
-                        if #ident.is_some() {
-                            return Err(__pcs_serde::de::Error::custom("multiple oneof fields set"));
+            if !field.skip_deserializing {
+                let oneof_type = field
+                    .oneof_type
+                    .as_ref()
+                    .ok_or_else(|| syn::Error::new(ident.span(), "oneof field must be Option"))?;
+                oneof_checks.push(quote! {
+                    match <#oneof_type as ::prost_canonical_serde::ProstOneof>::try_deserialize(
+                        #key_str_ident,
+                        &mut #map_ident,
+                    )? {
+                        ::prost_canonical_serde::OneofMatch::Matched(Some(#oneof_value_ident)) => {
+                            if #ident.is_some() {
+                                return Err(__pcs_serde::de::Error::custom("multiple oneof fields set"));
+                            }
+                            #ident = Some(#oneof_value_ident);
+                            continue;
                         }
-                        #ident = Some(#oneof_value_ident);
-                        continue;
+                        ::prost_canonical_serde::OneofMatch::Matched(None) => {
+                            continue;
+                        }
+                        ::prost_canonical_serde::OneofMatch::NoMatch => {}
                     }
-                    ::prost_canonical_serde::OneofMatch::Matched(None) => {
-                        continue;
-                    }
-                    ::prost_canonical_serde::OneofMatch::NoMatch => {}
-                }
-            });
+                });
+            }
         } else {
-            match_arms.push(deserialize_match_arm(field, &map_ident)?);
+            if !field.skip_deserializing {
+                match_arms.push(deserialize_match_arm(field, &map_ident)?);
+            }
         }
     }
     let tag_init = if tag_key.is_some() {
@@ -378,75 +385,78 @@ fn expand_deserialize_struct(
         },
     };
 
-    Ok(wrap_with_serde_path(quote! {
-        #(#flatten_deny_guards)*
+    Ok(wrap_with_serde_path(
+        quote! {
+            #(#flatten_deny_guards)*
 
-        impl ::prost_canonical_serde::CanonicalDeserialize for #name {
-            fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: __pcs_serde::Deserializer<'de>,
-            {
-                struct Visitor;
+            impl ::prost_canonical_serde::CanonicalDeserialize for #name {
+                fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: __pcs_serde::Deserializer<'de>,
+                {
+                    struct Visitor;
 
-                impl<'de> __pcs_serde::de::Visitor<'de> for Visitor {
-                    type Value = #name;
+                    impl<'de> __pcs_serde::de::Visitor<'de> for Visitor {
+                        type Value = #name;
 
-                    fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                        formatter.write_str(#expecting)
-                    }
-
-                    fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: __pcs_serde::de::MapAccess<'de>,
-                    {
-                        #tag_init
-                        #container_default_init
-                        #(#field_inits)*
-
-                        while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
-                            let #key_str_ident = #key_cow_ident.as_ref();
-                            #tag_check
-                            #(#oneof_checks)*
-                            match #key_str_ident {
-                                #(#match_arms)*
-                                _ => {
-                                    #(#flatten_checks)*
-                                    if #deny_unknown_fields {
-                                        return Err(__pcs_serde::de::Error::unknown_field(#key_str_ident, &[]));
-                                    }
-                                    let _ = #map_ident.next_value::<__pcs_serde::de::IgnoredAny>()?;
-                                }
-                            }
+                        fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                            formatter.write_str(#expecting)
                         }
 
-                        #tag_finish
-                        #(#flatten_finishes)*
+                        fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
+                        where
+                            A: __pcs_serde::de::MapAccess<'de>,
+                        {
+                            #tag_init
+                            #container_default_init
+                            #(#field_inits)*
 
-                        Ok(#name {
-                            #(#field_names),*
-                        })
+                            while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
+                                let #key_str_ident = #key_cow_ident.as_ref();
+                                #tag_check
+                                #(#oneof_checks)*
+                                match #key_str_ident {
+                                    #(#match_arms)*
+                                    _ => {
+                                        #(#flatten_checks)*
+                                        if #deny_unknown_fields {
+                                            return Err(__pcs_serde::de::Error::unknown_field(#key_str_ident, &[]));
+                                        }
+                                        let _ = #map_ident.next_value::<__pcs_serde::de::IgnoredAny>()?;
+                                    }
+                                }
+                            }
+
+                            #tag_finish
+                            #(#flatten_finishes)*
+
+                            Ok(#name {
+                                #(#field_names),*
+                            })
+                        }
+                    }
+
+                    if #has_flatten {
+                        deserializer.deserialize_map(Visitor)
+                    } else {
+                        deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
                     }
                 }
+            }
 
-                if #has_flatten {
-                    deserializer.deserialize_map(Visitor)
-                } else {
-                    deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
+            impl<'de> __pcs_serde::Deserialize<'de> for #name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: __pcs_serde::Deserializer<'de>,
+                {
+                    <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
+                        deserializer,
+                    )
                 }
             }
-        }
-
-        impl<'de> __pcs_serde::Deserialize<'de> for #name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: __pcs_serde::Deserializer<'de>,
-            {
-                <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
-                    deserializer,
-                )
-            }
-        }
-    }, &container_attrs.serde_path))
+        },
+        &container_attrs.serde_path,
+    ))
 }
 
 fn expand_serialize_transparent_struct(
@@ -615,40 +625,46 @@ fn expand_serialize_enum(
     if is_oneof_enum(data) {
         let oneof_impl = expand_oneof_impl(input, data, &container_attrs)?;
         if let Some(tokens) = expand_serialize_conversion(name, &container_attrs.serialize_via) {
-            return Ok(wrap_with_serde_path(quote! {
-                #oneof_impl
-                #tokens
-            }, &container_attrs.serde_path));
+            return Ok(wrap_with_serde_path(
+                quote! {
+                    #oneof_impl
+                    #tokens
+                },
+                &container_attrs.serde_path,
+            ));
         }
         let serialize_name = LitStr::new(&container_attrs.serialize_name, name.span());
-        return Ok(wrap_with_serde_path(quote! {
-            #oneof_impl
-            impl ::prost_canonical_serde::CanonicalSerialize for #name {
-                fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-                where
-                    S: __pcs_serde::Serializer,
-                {
-                    use __pcs_serde::ser::SerializeStruct;
-                    let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
-                        serializer.serialize_struct(#serialize_name, 1)?,
-                    );
-                    <Self as ::prost_canonical_serde::ProstOneof>::serialize_field(self, &mut map)?;
-                    map.end()
+        return Ok(wrap_with_serde_path(
+            quote! {
+                #oneof_impl
+                impl ::prost_canonical_serde::CanonicalSerialize for #name {
+                    fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                    where
+                        S: __pcs_serde::Serializer,
+                    {
+                        use __pcs_serde::ser::SerializeStruct;
+                        let mut map = ::prost_canonical_serde::StructObjectSerializer::new(
+                            serializer.serialize_struct(#serialize_name, 1)?,
+                        );
+                        <Self as ::prost_canonical_serde::ProstOneof>::serialize_field(self, &mut map)?;
+                        map.end()
+                    }
                 }
-            }
 
-            impl __pcs_serde::Serialize for #name {
-                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-                where
-                    S: __pcs_serde::Serializer,
-                {
-                    <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
-                        self,
-                        serializer,
-                    )
+                impl __pcs_serde::Serialize for #name {
+                    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                    where
+                        S: __pcs_serde::Serializer,
+                    {
+                        <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
+                            self,
+                            serializer,
+                        )
+                    }
                 }
-            }
-        }, &container_attrs.serde_path));
+            },
+            &container_attrs.serde_path,
+        ));
     }
     if let Some(tokens) = expand_serialize_conversion(name, &container_attrs.serialize_via) {
         return Ok(wrap_with_serde_path(tokens, &container_attrs.serde_path));
@@ -735,10 +751,13 @@ fn expand_serialize_enum(
         }
     };
     let skip_serialize_expr = if has_skip_serializing {
-        let arms = variant_renames.iter().filter(|variant| variant.skip_serializing).map(|variant| {
-            let ident = &variant.ident;
-            quote! { value == Self::#ident as i32 }
-        });
+        let arms = variant_renames
+            .iter()
+            .filter(|variant| variant.skip_serializing)
+            .map(|variant| {
+                let ident = &variant.ident;
+                quote! { value == Self::#ident as i32 }
+            });
         quote! {
             #( #arms )||*
         }
@@ -746,69 +765,75 @@ fn expand_serialize_enum(
         quote! { false }
     };
     let skip_deserialize_expr = if has_skip_deserializing {
-        let arms = variant_renames.iter().filter(|variant| variant.skip_deserializing).map(|variant| {
-            let ident = &variant.ident;
-            quote! { value == Self::#ident as i32 }
-        });
+        let arms = variant_renames
+            .iter()
+            .filter(|variant| variant.skip_deserializing)
+            .map(|variant| {
+                let ident = &variant.ident;
+                quote! { value == Self::#ident as i32 }
+            });
         quote! {
             #( #arms )||*
         }
     } else {
         quote! { false }
     };
-    Ok(wrap_with_serde_path(quote! {
-        impl ::prost_canonical_serde::ProstEnum for #name {
-            fn from_i32(value: i32) -> ::core::option::Option<Self> {
-                Self::try_from(value).ok()
+    Ok(wrap_with_serde_path(
+        quote! {
+            impl ::prost_canonical_serde::ProstEnum for #name {
+                fn from_i32(value: i32) -> ::core::option::Option<Self> {
+                    Self::try_from(value).ok()
+                }
+
+                fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+                    #from_str_name_expr
+                }
+
+                fn as_str_name(&self) -> &'static str {
+                    #as_str_name_expr
+                }
+
+                fn as_i32(&self) -> i32 {
+                    *self as i32
+                }
+
+                fn is_variant_skipped_for_serialization(value: i32) -> bool {
+                    #skip_serialize_expr
+                }
+
+                fn is_variant_skipped_for_deserialization(value: i32) -> bool {
+                    #skip_deserialize_expr
+                }
             }
 
-            fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-                #from_str_name_expr
+            impl ::prost_canonical_serde::CanonicalSerialize for #name {
+                fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: __pcs_serde::Serializer,
+                {
+                    __pcs_serde::Serialize::serialize(
+                        &::prost_canonical_serde::CanonicalEnum::<Self>::new(
+                            <Self as ::prost_canonical_serde::ProstEnum>::as_i32(self),
+                        ),
+                        serializer,
+                    )
+                }
             }
 
-            fn as_str_name(&self) -> &'static str {
-                #as_str_name_expr
+            impl __pcs_serde::Serialize for #name {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: __pcs_serde::Serializer,
+                {
+                    <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
+                        self,
+                        serializer,
+                    )
+                }
             }
-
-            fn as_i32(&self) -> i32 {
-                *self as i32
-            }
-
-            fn is_variant_skipped_for_serialization(value: i32) -> bool {
-                #skip_serialize_expr
-            }
-
-            fn is_variant_skipped_for_deserialization(value: i32) -> bool {
-                #skip_deserialize_expr
-            }
-        }
-
-        impl ::prost_canonical_serde::CanonicalSerialize for #name {
-            fn serialize_canonical<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: __pcs_serde::Serializer,
-            {
-                __pcs_serde::Serialize::serialize(
-                    &::prost_canonical_serde::CanonicalEnum::<Self>::new(
-                        <Self as ::prost_canonical_serde::ProstEnum>::as_i32(self),
-                    ),
-                    serializer,
-                )
-            }
-        }
-
-        impl __pcs_serde::Serialize for #name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: __pcs_serde::Serializer,
-            {
-                <Self as ::prost_canonical_serde::CanonicalSerialize>::serialize_canonical(
-                    self,
-                    serializer,
-                )
-            }
-        }
-    }, &container_attrs.serde_path))
+        },
+        &container_attrs.serde_path,
+    ))
 }
 
 fn expand_deserialize_enum(
@@ -844,100 +869,106 @@ fn expand_deserialize_enum(
         let key_str_ident = Ident::new("__pcs_key_str", Span::call_site());
         let value_ident = Ident::new("__pcs_value", Span::call_site());
         let found_ident = Ident::new("__pcs_found", Span::call_site());
-        return Ok(wrap_with_serde_path(quote! {
+        return Ok(wrap_with_serde_path(
+            quote! {
+                impl ::prost_canonical_serde::CanonicalDeserialize for #name {
+                    fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: __pcs_serde::Deserializer<'de>,
+                    {
+                        struct Visitor;
+
+                        impl<'de> __pcs_serde::de::Visitor<'de> for Visitor {
+                            type Value = #name;
+
+                            fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                                formatter.write_str(#expecting)
+                            }
+
+                            fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
+                            where
+                                A: __pcs_serde::de::MapAccess<'de>,
+                            {
+                                let mut #found_ident = None;
+                                while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
+                                    let #key_str_ident = #key_cow_ident.as_ref();
+                                    match <#name as ::prost_canonical_serde::ProstOneof>::try_deserialize(
+                                        #key_str_ident,
+                                        &mut #map_ident,
+                                    )? {
+                                        ::prost_canonical_serde::OneofMatch::Matched(Some(#value_ident)) => {
+                                            if #found_ident.is_some() {
+                                                return Err(__pcs_serde::de::Error::custom(
+                                                    "multiple oneof fields set",
+                                                ));
+                                            }
+                                            #found_ident = Some(#value_ident);
+                                            continue;
+                                        }
+                                        ::prost_canonical_serde::OneofMatch::Matched(None) => {
+                                            continue;
+                                        }
+                                        ::prost_canonical_serde::OneofMatch::NoMatch => {
+                                            if #deny_unknown_fields {
+                                                return Err(__pcs_serde::de::Error::unknown_field(#key_str_ident, &[]));
+                                            }
+                                            let _ = #map_ident.next_value::<__pcs_serde::de::IgnoredAny>()?;
+                                        }
+                                    }
+                                }
+
+                                #found_ident.ok_or_else(|| __pcs_serde::de::Error::custom("expected oneof field"))
+                            }
+                        }
+
+                        deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
+                }
+            }
+
+            impl<'de> __pcs_serde::Deserialize<'de> for #name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: __pcs_serde::Deserializer<'de>,
+                {
+                    <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
+                        deserializer,
+                    )
+                }
+            }
+            },
+            &container_attrs.serde_path,
+        ));
+    }
+
+    Ok(wrap_with_serde_path(
+        quote! {
             impl ::prost_canonical_serde::CanonicalDeserialize for #name {
                 fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
                 where
                     D: __pcs_serde::Deserializer<'de>,
                 {
-                    struct Visitor;
-
-                    impl<'de> __pcs_serde::de::Visitor<'de> for Visitor {
-                        type Value = #name;
-
-                        fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                            formatter.write_str(#expecting)
-                        }
-
-                        fn visit_map<A>(self, mut #map_ident: A) -> Result<Self::Value, A::Error>
-                        where
-                            A: __pcs_serde::de::MapAccess<'de>,
-                        {
-                            let mut #found_ident = None;
-                            while let Some(#key_cow_ident) = #map_ident.next_key::<::alloc::borrow::Cow<'de, str>>()? {
-                                let #key_str_ident = #key_cow_ident.as_ref();
-                                match <#name as ::prost_canonical_serde::ProstOneof>::try_deserialize(
-                                    #key_str_ident,
-                                    &mut #map_ident,
-                                )? {
-                                    ::prost_canonical_serde::OneofMatch::Matched(Some(#value_ident)) => {
-                                        if #found_ident.is_some() {
-                                            return Err(__pcs_serde::de::Error::custom(
-                                                "multiple oneof fields set",
-                                            ));
-                                        }
-                                        #found_ident = Some(#value_ident);
-                                        continue;
-                                    }
-                                    ::prost_canonical_serde::OneofMatch::Matched(None) => {
-                                        continue;
-                                    }
-                                    ::prost_canonical_serde::OneofMatch::NoMatch => {
-                                        if #deny_unknown_fields {
-                                            return Err(__pcs_serde::de::Error::unknown_field(#key_str_ident, &[]));
-                                        }
-                                        let _ = #map_ident.next_value::<__pcs_serde::de::IgnoredAny>()?;
-                                    }
-                                }
-                            }
-
-                            #found_ident.ok_or_else(|| __pcs_serde::de::Error::custom("expected oneof field"))
-                        }
-                    }
-
-                    deserializer.deserialize_struct(#deserialize_name, &[], Visitor)
+                    let value = <::prost_canonical_serde::CanonicalEnumValue<#name> as __pcs_serde::Deserialize>::deserialize(
+                        deserializer,
+                    )?
+                    .0;
+                    #name::from_i32(value)
+                        .ok_or_else(|| __pcs_serde::de::Error::custom("unknown enum number"))
+                }
             }
-        }
 
-        impl<'de> __pcs_serde::Deserialize<'de> for #name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: __pcs_serde::Deserializer<'de>,
-            {
-                <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
-                    deserializer,
-                )
+            impl<'de> __pcs_serde::Deserialize<'de> for #name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: __pcs_serde::Deserializer<'de>,
+                {
+                    <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
+                        deserializer,
+                    )
+                }
             }
-        }
-        }, &container_attrs.serde_path));
-    }
-
-    Ok(wrap_with_serde_path(quote! {
-        impl ::prost_canonical_serde::CanonicalDeserialize for #name {
-            fn deserialize_canonical<'de, D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: __pcs_serde::Deserializer<'de>,
-            {
-                let value = <::prost_canonical_serde::CanonicalEnumValue<#name> as __pcs_serde::Deserialize>::deserialize(
-                    deserializer,
-                )?
-                .0;
-                #name::from_i32(value)
-                    .ok_or_else(|| __pcs_serde::de::Error::custom("unknown enum number"))
-            }
-        }
-
-        impl<'de> __pcs_serde::Deserialize<'de> for #name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: __pcs_serde::Deserializer<'de>,
-            {
-                <Self as ::prost_canonical_serde::CanonicalDeserialize>::deserialize_canonical(
-                    deserializer,
-                )
-            }
-        }
-    }, &container_attrs.serde_path))
+        },
+        &container_attrs.serde_path,
+    ))
 }
 
 fn expand_oneof_impl(
@@ -1065,9 +1096,13 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
     let ident = &field.ident;
     let serialize_name = LitStr::new(&field.serialize_name, ident.span());
 
+    if field.skip_serializing {
+        return quote! {};
+    }
+
     if field.is_flatten {
         let target_ty = field.flatten_target_ty();
-        return if field.is_option_message() {
+        let tokens = if field.is_option_message() {
             quote! {
                 if let Some(value) = &self.#ident {
                     <#target_ty as ::prost_canonical_serde::ProstMessage>::serialize_fields(value, map)?;
@@ -1078,17 +1113,21 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
                 <#target_ty as ::prost_canonical_serde::ProstMessage>::serialize_fields(&self.#ident, map)?;
             }
         };
+        return wrap_skip_serializing_if(field, tokens);
     }
 
     if field.is_oneof {
-        return quote! {
+        return wrap_skip_serializing_if(
+            field,
+            quote! {
             if let Some(value) = &self.#ident {
                 ::prost_canonical_serde::ProstOneof::serialize_field(value, map)?;
             }
-        };
+            },
+        );
     }
 
-    match &field.kind {
+    let tokens = match &field.kind {
         Kind::Option(inner) => {
             let value_expr = serialize_value_expr(
                 inner,
@@ -1156,7 +1195,9 @@ fn serialize_field(field: &FieldInfo) -> proc_macro2::TokenStream {
                 }
             }
         }
-    }
+    };
+
+    wrap_skip_serializing_if(field, tokens)
 }
 
 fn serialize_transparent_field(
@@ -1241,6 +1282,12 @@ fn init_field(
             };
         }
         FieldDefault::None => {}
+    }
+
+    if field.skip_deserializing {
+        return quote! {
+            let mut #ident = ::core::default::Default::default();
+        };
     }
 
     if !matches!(container_default, None | Some(ContainerDefault::None)) {
@@ -1547,15 +1594,22 @@ fn deserialize_transparent_field(field: &FieldInfo) -> syn::Result<proc_macro2::
 fn serialized_field_count_stmt(field: &FieldInfo) -> proc_macro2::TokenStream {
     let ident = &field.ident;
 
+    if field.skip_serializing {
+        return quote! {};
+    }
+
     if field.is_oneof || matches!(field.kind, Kind::Option(_)) {
-        return quote! {
+        return wrap_skip_serializing_if(
+            field,
+            quote! {
             if self.#ident.is_some() {
                 __pcs_len += 1;
             }
-        };
+            },
+        );
     }
 
-    match &field.kind {
+    let tokens = match &field.kind {
         Kind::Vec(_) | Kind::Map(_, _, _) => quote! {
             if !self.#ident.is_empty() {
                 __pcs_len += 1;
@@ -1570,7 +1624,9 @@ fn serialized_field_count_stmt(field: &FieldInfo) -> proc_macro2::TokenStream {
                 }
             }
         }
-    }
+    };
+
+    wrap_skip_serializing_if(field, tokens)
 }
 
 fn field_match_arm(field: &FieldInfo) -> syn::Result<proc_macro2::TokenStream> {
@@ -1622,6 +1678,21 @@ fn serialize_value_expr(
         }
     } else {
         quote! { ::prost_canonical_serde::Canonical::new(#ident) }
+    }
+}
+
+fn wrap_skip_serializing_if(
+    field: &FieldInfo,
+    tokens: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let Some(path) = &field.skip_serializing_if else {
+        return tokens;
+    };
+    let ident = &field.ident;
+    quote! {
+        if !(#path)(&self.#ident) {
+            #tokens
+        }
     }
 }
 
@@ -2198,6 +2269,9 @@ struct FieldInfo {
     deserialize_name: String,
     aliases: Vec<String>,
     default: FieldDefault,
+    skip_serializing: bool,
+    skip_deserializing: bool,
+    skip_serializing_if: Option<Path>,
     proto_name: String,
     oneof_type: Option<Type>,
     option_inner: Option<Type>,
@@ -2254,7 +2328,10 @@ impl FieldInfo {
             }
         }
 
-        let proto_name = attrs.proto_name.clone().unwrap_or_else(|| ident.to_string());
+        let proto_name = attrs
+            .proto_name
+            .clone()
+            .unwrap_or_else(|| ident.to_string());
         let serialize_name = name_for_field(
             &ident,
             attrs.json_name.as_ref(),
@@ -2283,6 +2360,9 @@ impl FieldInfo {
             deserialize_name,
             aliases: attrs.aliases,
             default: attrs.default,
+            skip_serializing: attrs.skip_serializing,
+            skip_deserializing: attrs.skip_deserializing,
+            skip_serializing_if: attrs.skip_serializing_if,
             proto_name,
             oneof_type,
             option_inner,
@@ -2319,6 +2399,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         deserialize_name: None,
         aliases: Vec::new(),
         default: FieldDefault::None,
+        skip_serializing: false,
+        skip_deserializing: false,
+        skip_serializing_if: None,
     };
 
     for attr in attrs {
@@ -2356,6 +2439,16 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 } else {
                     field.default = FieldDefault::Default;
                 }
+            } else if meta.path.is_ident("skip") {
+                field.skip_serializing = true;
+                field.skip_deserializing = true;
+            } else if meta.path.is_ident("skip_serializing") {
+                field.skip_serializing = true;
+            } else if meta.path.is_ident("skip_deserializing") {
+                field.skip_deserializing = true;
+            } else if meta.path.is_ident("skip_serializing_if") {
+                let value: LitStr = meta.value()?.parse()?;
+                field.skip_serializing_if = Some(syn::parse_str::<Path>(&value.value())?);
             } else if meta.path.is_ident("proto_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 field.proto_name = Some(value.value());
@@ -2405,9 +2498,9 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
                             let value: LitStr = nested.value()?.parse()?;
                             variant.deserialize_name = Some(value.value());
                         }
-                            Ok(())
-                        })?;
-                    }
+                        Ok(())
+                    })?;
+                }
             } else if meta.path.is_ident("alias") {
                 let value: LitStr = meta.value()?.parse()?;
                 variant.aliases.push(value.value());
@@ -2584,11 +2677,7 @@ fn unsupported_prost_canonical_serde_variant_attr(path: &syn::Path) -> syn::Erro
     )
 }
 
-fn set_serialize_via(
-    slot: &mut SerializeVia,
-    value: SerializeVia,
-    span: Span,
-) -> syn::Result<()> {
+fn set_serialize_via(slot: &mut SerializeVia, value: SerializeVia, span: Span) -> syn::Result<()> {
     if !matches!(slot, SerializeVia::None) {
         return Err(syn::Error::new(
             span,
@@ -2637,6 +2726,9 @@ struct FieldAttrs {
     deserialize_name: Option<String>,
     aliases: Vec<String>,
     default: FieldDefault,
+    skip_serializing: bool,
+    skip_deserializing: bool,
+    skip_serializing_if: Option<Path>,
 }
 
 struct ContainerAttrs {
@@ -2735,4 +2827,3 @@ struct EnumVariantRename {
     skip_serializing: bool,
     skip_deserializing: bool,
 }
-

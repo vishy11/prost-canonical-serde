@@ -21,7 +21,9 @@ enum AliasedChoice {
     Other(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize,
+)]
 #[repr(i32)]
 enum RenamedEnum {
     #[prost_canonical_serde(rename(serialize = "WIRE_READY", deserialize = "wire-ready"))]
@@ -29,7 +31,9 @@ enum RenamedEnum {
     Idle = 1,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize,
+)]
 #[repr(i32)]
 enum AliasedEnum {
     #[prost_canonical_serde(alias = "wire-ready")]
@@ -69,7 +73,9 @@ enum SkipSerializeChoice {
     Other(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize,
+)]
 #[repr(i32)]
 enum SkippedEnum {
     #[prost_canonical_serde(skip)]
@@ -77,7 +83,9 @@ enum SkippedEnum {
     Idle = 1,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize,
+)]
 #[repr(i32)]
 enum SkipSerializeEnum {
     #[prost_canonical_serde(skip_serializing)]
@@ -85,7 +93,9 @@ enum SkipSerializeEnum {
     Idle = 1,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration, CanonicalSerialize, CanonicalDeserialize,
+)]
 #[repr(i32)]
 enum SkipDeserializeEnum {
     #[prost_canonical_serde(skip_deserializing)]
@@ -187,9 +197,8 @@ fn variant_rename_applies_to_oneof_serialize_and_deserialize_names() {
         json!({ "wireValue": "demo" })
     );
 
-    let roundtrip: RenamedChoice =
-        serde_json::from_value(json!({ "wire_value": "demo" }))
-            .expect("deserialize renamed oneof variant");
+    let roundtrip: RenamedChoice = serde_json::from_value(json!({ "wire_value": "demo" }))
+        .expect("deserialize renamed oneof variant");
 
     assert_eq!(roundtrip, value);
 }
@@ -202,35 +211,30 @@ fn variant_rename_applies_to_protobuf_enum_serialize_and_deserialize_names() {
     );
 
     let roundtrip: RenamedEnum =
-        serde_json::from_value(json!("wire-ready"))
-            .expect("deserialize renamed protobuf enum");
+        serde_json::from_value(json!("wire-ready")).expect("deserialize renamed protobuf enum");
 
     assert_eq!(roundtrip, RenamedEnum::Ready);
 }
 
 #[test]
 fn variant_alias_applies_to_oneof_deserialize_names() {
-    let roundtrip: AliasedChoice =
-        serde_json::from_value(json!({ "wire_value": "demo" }))
-            .expect("deserialize aliased oneof variant");
+    let roundtrip: AliasedChoice = serde_json::from_value(json!({ "wire_value": "demo" }))
+        .expect("deserialize aliased oneof variant");
     assert_eq!(roundtrip, AliasedChoice::Value("demo".to_string()));
 
-    let roundtrip: AliasedChoice =
-        serde_json::from_value(json!({ "wire-value": "demo" }))
-            .expect("deserialize second aliased oneof variant");
+    let roundtrip: AliasedChoice = serde_json::from_value(json!({ "wire-value": "demo" }))
+        .expect("deserialize second aliased oneof variant");
     assert_eq!(roundtrip, AliasedChoice::Value("demo".to_string()));
 }
 
 #[test]
 fn variant_alias_applies_to_protobuf_enum_deserialize_names() {
     let roundtrip: AliasedEnum =
-        serde_json::from_value(json!("wire-ready"))
-            .expect("deserialize aliased protobuf enum");
+        serde_json::from_value(json!("wire-ready")).expect("deserialize aliased protobuf enum");
     assert_eq!(roundtrip, AliasedEnum::Ready);
 
-    let roundtrip: AliasedEnum =
-        serde_json::from_value(json!("wire_ready"))
-            .expect("deserialize second aliased protobuf enum");
+    let roundtrip: AliasedEnum = serde_json::from_value(json!("wire_ready"))
+        .expect("deserialize second aliased protobuf enum");
     assert_eq!(roundtrip, AliasedEnum::Ready);
 }
 
@@ -238,7 +242,10 @@ fn variant_alias_applies_to_protobuf_enum_deserialize_names() {
 fn variant_skip_rejects_oneof_serialize_and_deserialize() {
     let err = serde_json::to_value(SkippedChoice::Value("demo".to_string()))
         .expect_err("skip variant should fail serialization");
-    assert!(err.to_string().contains("skipped variant cannot be serialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped variant cannot be serialized")
+    );
 
     let err = serde_json::from_value::<SkippedChoice>(json!({ "value": "demo" }))
         .expect_err("skip variant should not deserialize");
@@ -249,11 +256,13 @@ fn variant_skip_rejects_oneof_serialize_and_deserialize() {
 fn variant_skip_serializing_only_rejects_oneof_serialize() {
     let err = serde_json::to_value(SkipSerializeChoice::Value("demo".to_string()))
         .expect_err("skip_serializing variant should fail serialization");
-    assert!(err.to_string().contains("skipped variant cannot be serialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped variant cannot be serialized")
+    );
 
-    let roundtrip: SkipSerializeChoice =
-        serde_json::from_value(json!({ "value": "demo" }))
-            .expect("skip_serializing variant should still deserialize");
+    let roundtrip: SkipSerializeChoice = serde_json::from_value(json!({ "value": "demo" }))
+        .expect("skip_serializing variant should still deserialize");
     assert_eq!(roundtrip, SkipSerializeChoice::Value("demo".to_string()));
 }
 
@@ -274,7 +283,10 @@ fn variant_skip_deserializing_only_rejects_oneof_deserialize() {
 fn variant_skip_rejects_protobuf_enum_serialize_and_deserialize() {
     let err = serde_json::to_value(SkippedEnum::Ready)
         .expect_err("skip variant should fail enum serialization");
-    assert!(err.to_string().contains("skipped enum variant cannot be serialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped enum variant cannot be serialized")
+    );
 
     let err = serde_json::from_value::<SkippedEnum>(json!("READY"))
         .expect_err("skip variant should not deserialize from string");
@@ -282,20 +294,23 @@ fn variant_skip_rejects_protobuf_enum_serialize_and_deserialize() {
 
     let err = serde_json::from_value::<SkippedEnum>(json!(0))
         .expect_err("skip variant should not deserialize from number");
-    assert!(err
-        .to_string()
-        .contains("skipped enum variant cannot be deserialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped enum variant cannot be deserialized")
+    );
 }
 
 #[test]
 fn variant_skip_serializing_only_rejects_protobuf_enum_serialize() {
     let err = serde_json::to_value(SkipSerializeEnum::Ready)
         .expect_err("skip_serializing variant should fail enum serialization");
-    assert!(err.to_string().contains("skipped enum variant cannot be serialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped enum variant cannot be serialized")
+    );
 
-    let roundtrip: SkipSerializeEnum =
-        serde_json::from_value(json!("READY"))
-            .expect("skip_serializing variant should still deserialize");
+    let roundtrip: SkipSerializeEnum = serde_json::from_value(json!("READY"))
+        .expect("skip_serializing variant should still deserialize");
     assert_eq!(roundtrip, SkipSerializeEnum::Ready);
 }
 
@@ -313,7 +328,8 @@ fn variant_skip_deserializing_only_rejects_protobuf_enum_deserialize() {
 
     let err = serde_json::from_value::<SkipDeserializeEnum>(json!(0))
         .expect_err("skip_deserializing variant should not deserialize from number");
-    assert!(err
-        .to_string()
-        .contains("skipped enum variant cannot be deserialized"));
+    assert!(
+        err.to_string()
+            .contains("skipped enum variant cannot be deserialized")
+    );
 }

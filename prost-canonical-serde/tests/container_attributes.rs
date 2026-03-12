@@ -142,7 +142,9 @@ impl TryFrom<TryFromWireChoice> for TryFromConvertedChoice {
 
     fn try_from(value: TryFromWireChoice) -> Result<Self, Self::Error> {
         match value {
-            TryFromWireChoice::Value(text) if text.is_empty() => Err(TryFromChoiceError("empty values are not allowed")),
+            TryFromWireChoice::Value(text) if text.is_empty() => {
+                Err(TryFromChoiceError("empty values are not allowed"))
+            }
             TryFromWireChoice::Value(text) => Ok(Self::Value(text.to_ascii_uppercase())),
         }
     }
@@ -623,9 +625,8 @@ fn container_serde_crate_path_is_accepted_for_structs() {
     let json = serde_json::to_value(&value).expect("serialize with custom serde path");
     assert_eq!(json, json!({ "value": "demo" }));
 
-    let roundtrip: CustomSerdePathMessage =
-        serde_json::from_value(json!({ "value": "demo" }))
-            .expect("deserialize with custom serde path");
+    let roundtrip: CustomSerdePathMessage = serde_json::from_value(json!({ "value": "demo" }))
+        .expect("deserialize with custom serde path");
     assert_eq!(roundtrip, value);
 }
 
@@ -686,9 +687,8 @@ fn container_serde_crate_path_is_accepted_for_oneofs() {
     let json = serde_json::to_value(&value).expect("serialize oneof with custom serde path");
     assert_eq!(json, json!({ "value": "demo" }));
 
-    let roundtrip: CustomSerdePathChoice =
-        serde_json::from_value(json!({ "value": "demo" }))
-            .expect("deserialize oneof with custom serde path");
+    let roundtrip: CustomSerdePathChoice = serde_json::from_value(json!({ "value": "demo" }))
+        .expect("deserialize oneof with custom serde path");
     assert_eq!(roundtrip, value);
 }
 
@@ -799,8 +799,8 @@ fn container_from_deserializes_through_intermediate_type() {
 
 #[test]
 fn container_into_serializes_through_intermediate_type() {
-    let value = serde_json::to_value(&IntoConvertedMessage { count: 7 })
-        .expect("serialize via into");
+    let value =
+        serde_json::to_value(&IntoConvertedMessage { count: 7 }).expect("serialize via into");
 
     assert_eq!(value, json!({ "count": "8" }));
 }

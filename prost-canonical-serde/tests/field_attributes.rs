@@ -68,6 +68,65 @@ fn container_default_message() -> FieldDefaultOverridesContainerMessage {
 }
 
 #[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct SkippedFieldMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(skip)]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct SkipSerializingFieldMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(skip_serializing)]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct SkipDeserializingFieldMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(skip_deserializing)]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+struct SkipDeserializingFieldDefaultMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(skip_deserializing)]
+    #[prost_canonical_serde(default = "default_count")]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+#[prost_canonical_serde(default = "container_skip_default_message")]
+struct SkipDeserializingIgnoresContainerDefaultMessage {
+    #[prost(int64, tag = "1")]
+    #[prost_canonical_serde(skip_deserializing)]
+    count: i64,
+
+    #[prost(string, tag = "2")]
+    note: String,
+}
+
+fn container_skip_default_message() -> SkipDeserializingIgnoresContainerDefaultMessage {
+    SkipDeserializingIgnoresContainerDefaultMessage {
+        count: 42,
+        note: "fallback".to_string(),
+    }
+}
+
+#[derive(Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 struct FlattenedInner {
     #[prost(int64, tag = "1")]
     #[prost_canonical_serde(proto_name = "count", json_name = "count")]
@@ -128,13 +187,11 @@ fn field_rename_applies_to_serialize_and_deserialize_names() {
     );
 
     let roundtrip: RenamedFieldMessage =
-        serde_json::from_value(json!({ "wireCount": "42" }))
-            .expect("deserialize renamed field");
+        serde_json::from_value(json!({ "wireCount": "42" })).expect("deserialize renamed field");
     assert_eq!(roundtrip, value);
 
-    let roundtrip: RenamedFieldMessage =
-        serde_json::from_value(json!({ "count": "42" }))
-            .expect("deserialize field from proto name alias");
+    let roundtrip: RenamedFieldMessage = serde_json::from_value(json!({ "count": "42" }))
+        .expect("deserialize field from proto name alias");
     assert_eq!(roundtrip, value);
 }
 
@@ -163,18 +220,15 @@ fn field_rename_supports_independent_serialize_and_deserialize_names() {
 #[test]
 fn field_alias_allows_multiple_deserialize_names() {
     let value: AliasedFieldMessage =
-        serde_json::from_value(json!({ "wire_count": "42" }))
-            .expect("deserialize aliased field");
+        serde_json::from_value(json!({ "wire_count": "42" })).expect("deserialize aliased field");
     assert_eq!(value, AliasedFieldMessage { count: 42 });
 
-    let value: AliasedFieldMessage =
-        serde_json::from_value(json!({ "wire-count": "42" }))
-            .expect("deserialize second aliased field");
+    let value: AliasedFieldMessage = serde_json::from_value(json!({ "wire-count": "42" }))
+        .expect("deserialize second aliased field");
     assert_eq!(value, AliasedFieldMessage { count: 42 });
 
     assert_eq!(
-        serde_json::to_value(&AliasedFieldMessage { count: 42 })
-            .expect("serialize aliased field"),
+        serde_json::to_value(&AliasedFieldMessage { count: 42 }).expect("serialize aliased field"),
         json!({ "count": "42" })
     );
 }
@@ -200,17 +254,15 @@ fn field_alias_works_with_explicit_rename() {
             .expect("deserialize second renamed aliased field");
     assert_eq!(roundtrip, value);
 
-    let roundtrip: RenamedAliasedFieldMessage =
-        serde_json::from_value(json!({ "name": "demo" }))
-            .expect("deserialize renamed aliased field from proto alias");
+    let roundtrip: RenamedAliasedFieldMessage = serde_json::from_value(json!({ "name": "demo" }))
+        .expect("deserialize renamed aliased field from proto alias");
     assert_eq!(roundtrip, value);
 }
 
 #[test]
 fn field_default_path_fills_missing_field() {
     let value: FieldPathDefaultMessage =
-        serde_json::from_value(json!({}))
-            .expect("missing field should use field default path");
+        serde_json::from_value(json!({})).expect("missing field should use field default path");
 
     assert_eq!(
         value,
@@ -239,8 +291,7 @@ fn field_default_path_preserves_present_field() {
 #[test]
 fn field_default_overrides_container_default_for_missing_field() {
     let value: FieldDefaultOverridesContainerMessage =
-        serde_json::from_value(json!({}))
-            .expect("field default should override container default");
+        serde_json::from_value(json!({})).expect("field default should override container default");
 
     assert_eq!(
         value,
@@ -353,4 +404,105 @@ fn flatten_collision_serialize_emits_keys_in_declaration_order() {
     .expect("serialize outer collision");
 
     assert_eq!(json, r#"{"count":"1","count":"2"}"#);
+}
+
+#[test]
+fn field_skip_omits_serialize_and_defaults_on_deserialize() {
+    let value = SkippedFieldMessage {
+        count: 42,
+        note: "demo".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&value).expect("serialize skipped field"),
+        json!({ "note": "demo" })
+    );
+
+    let roundtrip: SkippedFieldMessage =
+        serde_json::from_value(json!({ "count": "9", "note": "demo" }))
+            .expect("deserialize skipped field");
+    assert_eq!(
+        roundtrip,
+        SkippedFieldMessage {
+            count: 0,
+            note: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_skip_serializing_omits_serialize_but_keeps_deserialize() {
+    let value = SkipSerializingFieldMessage {
+        count: 42,
+        note: "demo".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&value).expect("serialize skip_serializing field"),
+        json!({ "note": "demo" })
+    );
+
+    let roundtrip: SkipSerializingFieldMessage =
+        serde_json::from_value(json!({ "count": "9", "note": "demo" }))
+            .expect("deserialize skip_serializing field");
+    assert_eq!(
+        roundtrip,
+        SkipSerializingFieldMessage {
+            count: 9,
+            note: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_skip_deserializing_keeps_serialize_and_defaults_on_deserialize() {
+    let value = SkipDeserializingFieldMessage {
+        count: 42,
+        note: "demo".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&value).expect("serialize skip_deserializing field"),
+        json!({ "count": "42", "note": "demo" })
+    );
+
+    let roundtrip: SkipDeserializingFieldMessage =
+        serde_json::from_value(json!({ "count": "9", "note": "demo" }))
+            .expect("deserialize skip_deserializing field");
+    assert_eq!(
+        roundtrip,
+        SkipDeserializingFieldMessage {
+            count: 0,
+            note: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_skip_deserializing_honors_field_default_path() {
+    let value: SkipDeserializingFieldDefaultMessage =
+        serde_json::from_value(json!({ "count": "9", "note": "demo" }))
+            .expect("deserialize skip_deserializing field with default path");
+
+    assert_eq!(
+        value,
+        SkipDeserializingFieldDefaultMessage {
+            count: 7,
+            note: "demo".to_string(),
+        }
+    );
+}
+
+#[test]
+fn field_skip_deserializing_uses_type_default_instead_of_container_default() {
+    let value: SkipDeserializingIgnoresContainerDefaultMessage = serde_json::from_value(json!({}))
+        .expect("deserialize skip_deserializing field with container default");
+
+    assert_eq!(
+        value,
+        SkipDeserializingIgnoresContainerDefaultMessage {
+            count: 0,
+            note: "fallback".to_string(),
+        }
+    );
 }
